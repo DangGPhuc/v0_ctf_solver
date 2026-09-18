@@ -1,0 +1,13 @@
+#!/usr/bin/env python3
+import sys
+from pathlib import Path
+
+# Thêm ctf_suite vào sys.path
+SUITE_DIR = Path(__file__).resolve().parent / "ctf_suite"
+if str(SUITE_DIR) not in sys.path:
+    sys.path.insert(0, str(SUITE_DIR))
+
+from ctf_core.cli.main import app
+
+if __name__ == "__main__":
+    app()

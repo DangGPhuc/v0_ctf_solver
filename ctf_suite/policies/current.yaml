@@ -1,0 +1,40 @@
+version: "1.0.0"
+name: "conservative_dual_agent"
+description: "Chính sách tác chiến thận trọng chuẩn: Ngân sách 2 fail, hỏi Advisor khi bắt đầu và bế tắc, cắt tỉa nhánh chết nghiêm ngặt."
+
+branching:
+  initial_hypotheses: 2
+  parallel_branches: 1
+  prune_dead_ends: true
+
+advisor:
+  ask_at_start: true
+  review_after_failed_attempts: 2
+  review_before_major_pivot: true
+  escalate_after_stalled_rounds: 2
+
+executor:
+  require_evidence: true
+  max_raw_log_lines: 40
+  require_reproduction: true
+  command_timeout_seconds: 60
+
+stopping:
+  max_consecutive_failures: 2
+  max_total_consultations: 10
+  kill_duplicate_branch: true
+
+scoring:
+  flag_reward: 10000
+  cost_per_executor_action: -10
+  cost_per_advisor_call: -30
+  cost_per_minute: -5
+  penalty_dead_branch: -20
+
+prompt_policy:
+  recent_nodes_depth: 4
+  retrieved_cases_limit: 1
+  strict_linter: true
+  evidence_detail_level: "compact"
+  executor_template: "template_h_react"
+  advisor_template: "template_e_auditable"

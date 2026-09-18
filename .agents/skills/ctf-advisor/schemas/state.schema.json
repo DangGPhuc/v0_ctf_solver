@@ -1,0 +1,79 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "CTFAdvisorState",
+  "description": "Quản lý trạng thái trao đổi giữa Executor (Anti-IDE/OpenCode) và Strategic Advisor (ChatGPT Web qua Oracle/PAL)",
+  "type": "object",
+  "required": ["challenge_id", "status", "phase", "iteration", "hypothesis_budget"],
+  "properties": {
+    "challenge_id": {
+      "type": ["string", "number"],
+      "description": "Mã định danh duy nhất của challenge trong giải đấu"
+    },
+    "challenge_name": {
+      "type": "string"
+    },
+    "category": {
+      "type": "string"
+    },
+    "status": {
+      "type": "string",
+      "enum": ["untriaged", "investigating", "testing_hypothesis", "stalled", "solved", "abandoned"],
+      "default": "untriaged"
+    },
+    "phase": {
+      "type": "string",
+      "enum": ["triage", "vulnerability_discovery", "exploit_development", "verification", "escalation", "completed"],
+      "default": "triage"
+    },
+    "iteration": {
+      "type": "integer",
+      "minimum": 0,
+      "default": 0
+    },
+    "oracle_session": {
+      "type": ["string", "null"],
+      "description": "ID hoặc identifier của phiên Oracle CLI/Browser để thực hiện --followup",
+      "default": null
+    },
+    "active_hypothesis": {
+      "type": ["string", "null"],
+      "description": "Giả thuyết hiện tại đang được Executor kiểm chứng",
+      "default": null
+    },
+    "hypothesis_budget": {
+      "type": "object",
+      "properties": {
+        "max_failures_per_hypothesis": {
+          "type": "integer",
+          "default": 2
+        },
+        "current_failures": {
+          "type": "integer",
+          "default": 0
+        },
+        "total_consultations": {
+          "type": "integer",
+          "default": 0
+        }
+      },
+      "required": ["max_failures_per_hypothesis", "current_failures", "total_consultations"]
+    },
+    "advisor_provider": {
+      "type": "string",
+      "enum": ["chatgpt-web", "pal-mcp", "manual-fallback"],
+      "default": "chatgpt-web"
+    },
+    "escalated": {
+      "type": "boolean",
+      "default": false
+    },
+    "flag": {
+      "type": ["string", "null"],
+      "default": null
+    },
+    "last_updated": {
+      "type": "string",
+      "format": "date-time"
+    }
+  }
+}

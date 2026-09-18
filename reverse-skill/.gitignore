@@ -1,0 +1,50 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.o
+*.dylib
+*.dll
+*.exe
+
+# OS & Editor files
+.DS_Store
+Thumbs.db
+Desktop.ini
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+*.bak
+*.tmp
+*.log
+
+# GDB & Core Dumps
+core
+core.*
+vgcore.*
+.gdb_history
+
+# CTF Challenge Isolated Workspaces
+work/*
+!work/.gitkeep
+
+# Environment / Secret Keys
+.env
+.venv/
+env/
+venv/
+ENV/
+
+# Burp / Proxy Cache
+*.burp
+*.har
+
+# Toolchain Binaries (Large / Proprietary — never commit)
+toolchain/burpsuite/*.jar
+toolchain/burpsuite/*.jdk
+toolchain/ida_pro
+toolchain/ida_pro_*
+!toolchain/ida_pro_wrapper.py

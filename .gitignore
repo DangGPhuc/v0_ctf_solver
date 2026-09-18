@@ -1,0 +1,71 @@
+# ==============================================================================
+# v0_ctf_solver - Git Ignore Rules
+# ==============================================================================
+
+# Secrets & Environment Configurations (Strictly Protected)
+.env
+.env.*
+!.env.example
+*.token
+*.pem
+*.key
+
+# Python Artifacts & Environments
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.pytest_cache/
+.coverage
+htmlcov/
+dist/
+build/
+*.egg-info/
+venv/
+.venv/
+env/
+
+# CTF Workspace & Runtime Artifacts
+CTF_Workspace/
+.downloads/
+*.downloads/
+challenges.json
+.challenges.lock
+.failed_flags.log
+submit_history.json
+reverse-skill/work/*
+!reverse-skill/work/.gitkeep
+
+# Bulky Archives & Binary Dumps (CTF Chall payloads)
+*.7z
+*.zip
+*.tar
+*.tar.gz
+*.tar.xz
+*.tar.bz2
+*.iso
+*.pcap
+*.pcapng
+*.vmem
+*.raw
+*.dmp
+
+# IDA Pro & Reversing Artifacts
+*.id0
+*.id1
+*.id2
+*.nam
+*.til
+*.idb
+*.i64
+.ida.log
+.ida.pid
+
+# OS & Editor Files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+*.swo
+*~

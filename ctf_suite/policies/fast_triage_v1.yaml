@@ -1,0 +1,40 @@
+version: "1.1.0"
+name: "fast_triage_speedrun"
+description: "Chính sách tác chiến tốc độ cao cho bài Easy/Medium: Ngân sách 1 fail, rẽ nhánh nhanh, escalate sớm nếu bế tắc."
+
+branching:
+  initial_hypotheses: 3
+  parallel_branches: 1
+  prune_dead_ends: true
+
+advisor:
+  ask_at_start: true
+  review_after_failed_attempts: 1
+  review_before_major_pivot: true
+  escalate_after_stalled_rounds: 1
+
+executor:
+  require_evidence: true
+  max_raw_log_lines: 30
+  require_reproduction: true
+  command_timeout_seconds: 30
+
+stopping:
+  max_consecutive_failures: 1
+  max_total_consultations: 6
+  kill_duplicate_branch: true
+
+scoring:
+  flag_reward: 10000
+  cost_per_executor_action: -10
+  cost_per_advisor_call: -25
+  cost_per_minute: -10
+  penalty_dead_branch: -30
+
+prompt_policy:
+  recent_nodes_depth: 2
+  retrieved_cases_limit: 1
+  strict_linter: true
+  evidence_detail_level: "ultra_compact"
+  executor_template: "template_h_react"
+  advisor_template: "template_e_auditable"
