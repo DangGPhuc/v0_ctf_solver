@@ -30,7 +30,6 @@ jobs:
 
       - name: Run Test Suite
         env:
-          FLAG_FORMAT: "^FLAG\\{.*\\}$"
           GITHUB_TOKEN: "mock_ci_token_for_tests"
         run: |
           python -m pytest -q
