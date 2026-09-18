@@ -24,6 +24,7 @@ from ..services.advisor_service import AdvisorService
 from ..services.orchestrator import ChallengeOrchestrator
 from ..advisor.browser_bridge import BrowserBridge
 from ..triage.static import StaticTriage
+from ..triage.fingerprint import FingerprintEngine
 from ..meta.tree import DiscoveryTree
 from ..meta.policy import ExplorationPolicy
 from ..meta.scorer import PolicyScorer
@@ -256,6 +257,57 @@ def status_cmd():
                 st = "[bold green]✔ Solved[/bold green]" if c.get("solved_by_me") else "[dim]⏳ In Progress[/dim]"
                 table.add_row(str(c.get("challenge_id")), c.get("category", "Misc"), c.get("name", ""), st)
             console.print(table)
+
+
+@app.command(name="triage")
+def triage_cmd(
+    challenge_id: str = typer.Argument(..., help="ID của bài thi cần phân tích Fingerprint"),
+    event_id: Optional[str] = typer.Option(None, "--event", "-e", help="Event ID"),
+):
+    """
+    🔍 Phân tích Deep Fingerprint (kiến trúc, mitigations, primitives) và gợi ý Thẻ Tri Thức phù hợp.
+    """
+    rt = RuntimeManager()
+    events = rt.list_events()
+    ev = event_id or (events[0] if events else "default_event")
+    meta = rt.read_challenge_state(ev, challenge_id) or {}
+    chall_path = rt.event_path(ev) / "challenges" / str(challenge_id)
+
+    if not chall_path.exists():
+        console.print(f"[yellow]⚠️ Challenge runtime chưa materialize tại {chall_path}. Phân tích dựa trên metadata.[/yellow]")
+        chall_path = None
+
+    fp = FingerprintEngine.extract(meta, chall_dir=chall_path)
+
+    table = Table(title=f"🎯 Deep Challenge Fingerprint: {meta.get('name', challenge_id)} (ID: {challenge_id})", header_style="bold cyan")
+    table.add_column("Thuộc tính", style="bold", width=25)
+    table.add_column("Chi tiết", width=55)
+
+    table.add_row("Category", f"[bold green]{fp.category.upper()}[/bold green]")
+    table.add_row("File Types", ", ".join(fp.file_types) or "None detected")
+    table.add_row("Architectures", ", ".join(fp.architectures) or "None detected")
+    table.add_row("Protections (Checksec)", ", ".join(fp.protections) or "None")
+    table.add_row("Detected Frameworks", ", ".join(fp.frameworks) or "None")
+    table.add_row("Candidate Primitives", ", ".join(fp.primitives) or "None")
+    table.add_row("Extracted Keywords", ", ".join(fp.suspicious_patterns[:8]) or "None")
+    table.add_row("Confidence", f"{fp.confidence * 100:.0f}%")
+    console.print(table)
+
+    # Query Knowledge Provider for top matching cards
+    try:
+        provider = GitHubKnowledgeProvider(offline=False)
+        hits = provider.search(fp.to_knowledge_query(), limit=3)
+        if hits:
+            ktable = Table(title="📚 Top Reusable Technique Cards từ v0_ctf_knowledge", header_style="bold magenta")
+            ktable.add_column("Điểm", justify="right", width=6)
+            ktable.add_column("ID", width=30)
+            ktable.add_column("Tiêu đề", width=35)
+            ktable.add_column("Khớp trên", width=25)
+            for h in hits:
+                ktable.add_row(f"{h.score:.1f}", h.id, h.title, ", ".join(h.matched_on))
+            console.print(ktable)
+    except Exception:
+        pass
 
 
 @app.command(name="submit")

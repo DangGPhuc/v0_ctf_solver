@@ -149,3 +149,42 @@ class KnowledgeCard(BaseModel):
     failure_modes: List[str] = Field(default_factory=list)
     reusable_snippets: List[str] = Field(default_factory=list)
     source: KnowledgeCardSource = Field(default_factory=KnowledgeCardSource)
+
+
+class ChallengeFingerprint(BaseModel):
+    category: str = "misc"
+    subcategory: Optional[str] = None
+    tags: List[str] = Field(default_factory=list)
+    file_types: List[str] = Field(default_factory=list)
+    architectures: List[str] = Field(default_factory=list)
+    frameworks: List[str] = Field(default_factory=list)
+    protections: List[str] = Field(default_factory=list)
+    primitives: List[str] = Field(default_factory=list)
+    suspicious_patterns: List[str] = Field(default_factory=list)
+    runtime_signals: Dict[str, Any] = Field(default_factory=dict)
+    confidence: float = 0.5
+
+    def to_knowledge_query(self, hypothesis: Optional[str] = None):
+        from ctf_core.knowledge.models import KnowledgeQuery
+        all_tags = list(self.tags)
+        for t in self.architectures + self.frameworks + self.primitives:
+            if t and t not in all_tags:
+                all_tags.append(t)
+        return KnowledgeQuery(
+            category=self.category,
+            tags=all_tags,
+            file_types=self.file_types,
+            protections=self.protections,
+            keywords=self.suspicious_patterns,
+            current_hypothesis=hypothesis,
+        )
+
+
+class Experiment(BaseModel):
+    experiment_id: str
+    hypothesis_id: str
+    intent: str
+    action: ExecutionAction
+    expected_evidence: List[str] = Field(default_factory=list)
+    actual_evidence: List[str] = Field(default_factory=list)
+    outcome: Literal["pending", "confirmed", "inconclusive", "failed", "flag_found"] = "pending"
