@@ -14,9 +14,9 @@ description: |
 - **Pwntools**: Use for interactive network crypto oracles.
 
 ## Playbooks in this Module
-- [rsa-attacks.md](file:///home/kali/reverse-skill/skills/crypto/rsa-attacks.md): Wiener, Boneh-Durfee, Franklin-Reiter, Hastad, Coppersmith small roots.
-- [lattice-attacks.md](file:///home/kali/reverse-skill/skills/crypto/lattice-attacks.md): LLL matrix construction, Babai Closest Vector, Hidden Number Problem (HNP), Knapsack.
-- [ecc-attacks.md](file:///home/kali/reverse-skill/skills/crypto/ecc-attacks.md): Nonce reuse/bias, invalid curve attacks, Pollard rho, MOV reduction, Smart's attack.
-- [prng-attacks.md](file:///home/kali/reverse-skill/skills/crypto/prng-attacks.md): MT19937 untemper & clone via `randcrack`, LCG algebraic recovery.
-- [symmetric-attacks.md](file:///home/kali/reverse-skill/skills/crypto/symmetric-attacks.md): AES CBC padding oracle, ECB byte-at-a-time, CBC bit-flipping, GCM nonce reuse.
-- [dlp-and-math.md](file:///home/kali/reverse-skill/skills/crypto/dlp-and-math.md): Discrete Logarithm Problem (BSGS, Pohlig-Hellman), advanced integer factorization.
+- [rsa-attacks.md](v0_ctf_knowledge/references/crypto/rsa-attacks.md): Wiener, Boneh-Durfee, Franklin-Reiter, Hastad, Coppersmith small roots.
+- [lattice-attacks.md](v0_ctf_knowledge/references/crypto/lattice-attacks.md): LLL matrix construction, Babai Closest Vector, Hidden Number Problem (HNP), Knapsack.
+- [ecc-attacks.md](v0_ctf_knowledge/references/crypto/ecc-attacks.md): Nonce reuse/bias, invalid curve attacks, Pollard rho, MOV reduction, Smart's attack.
+- [prng-attacks.md](v0_ctf_knowledge/references/crypto/prng-attacks.md): MT19937 untemper & clone via `randcrack`, LCG algebraic recovery.
+- [symmetric-attacks.md](v0_ctf_knowledge/references/crypto/symmetric-attacks.md): AES CBC padding oracle, ECB byte-at-a-time, CBC bit-flipping, GCM nonce reuse.
+- [dlp-and-math.md](v0_ctf_knowledge/references/crypto/dlp-and-math.md): Discrete Logarithm Problem (BSGS, Pohlig-Hellman), advanced integer factorization.

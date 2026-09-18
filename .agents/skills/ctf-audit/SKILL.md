@@ -14,6 +14,6 @@ description: |
 - **Autonomous ReAct Protocol**: Formal 5-step loop (Hypothesis $\to$ Static Proof $\to$ Minimal Probe $\to$ Weaponized Exploit $\to$ Flag Verification).
 
 ## Playbooks in this Module
-- [whitebox_triage.md](file:///home/kali/reverse-skill/skills/audit/whitebox_triage.md): Source-to-Sink methodology, sink inventory, and fast regex triage.
-- [binary_audit.md](file:///home/kali/reverse-skill/skills/audit/binary_audit.md): Unsafe C functions, checksec vs mitigations, static decompilation checklist.
-- [structured_reasoning.md](file:///home/kali/reverse-skill/skills/audit/structured_reasoning.md): Standardized ReAct CTF problem solving and 3-strike deadlock break protocol.
+- [whitebox_triage.md](v0_ctf_knowledge/references/audit/whitebox_triage.md): Source-to-Sink methodology, sink inventory, and fast regex triage.
+- [binary_audit.md](v0_ctf_knowledge/references/audit/binary_audit.md): Unsafe C functions, checksec vs mitigations, static decompilation checklist.
+- [structured_reasoning.md](v0_ctf_knowledge/references/audit/structured_reasoning.md): Standardized ReAct CTF problem solving and 3-strike deadlock break protocol.

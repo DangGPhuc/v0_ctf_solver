@@ -24,8 +24,8 @@ description: |
    - `python3 solve.py --gdb` (Attach GDB with custom breakpoints)
 
 ## Playbooks in this Module
-- [stack-pwn.md](file:///home/kali/reverse-skill/skills/pwn/stack-pwn.md): Ret2text, Ret2libc, ROP chains, SROP, Ret2csu, Stack Pivoting.
-- [heap-pwn.md](file:///home/kali/reverse-skill/skills/pwn/heap-pwn.md): Glibc 2.23-2.39 heap techniques, Tcache poisoning, Safe-linking bypass, House of Apple/Cat/Botcake.
-- [format-string.md](file:///home/kali/reverse-skill/skills/pwn/format-string.md): Memory leakage and `%n` arbitrary write techniques.
-- [kernel-pwn.md](file:///home/kali/reverse-skill/skills/pwn/kernel-pwn.md): QEMU kernel debugging, slab UAF, `commit_creds`, `ret2usr`, KPTI trampoline.
-- [sandbox-escape.md](file:///home/kali/reverse-skill/skills/pwn/sandbox-escape.md): Seccomp bypasses, Open-Read-Write (ORW) shellcodes.
+- [stack-pwn.md](v0_ctf_knowledge/references/pwn/stack-pwn.md): Ret2text, Ret2libc, ROP chains, SROP, Ret2csu, Stack Pivoting.
+- [heap-pwn.md](v0_ctf_knowledge/references/pwn/heap-pwn.md): Glibc 2.23-2.39 heap techniques, Tcache poisoning, Safe-linking bypass, House of Apple/Cat/Botcake.
+- [format-string.md](v0_ctf_knowledge/references/pwn/format-string.md): Memory leakage and `%n` arbitrary write techniques.
+- [kernel-pwn.md](v0_ctf_knowledge/references/pwn/kernel-pwn.md): QEMU kernel debugging, slab UAF, `commit_creds`, `ret2usr`, KPTI trampoline.
+- [sandbox-escape.md](v0_ctf_knowledge/references/pwn/sandbox-escape.md): Seccomp bypasses, Open-Read-Write (ORW) shellcodes.

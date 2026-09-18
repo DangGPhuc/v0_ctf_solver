@@ -1,12 +1,12 @@
 ---
 name: ctf-anti-ide
-description: Autonomous CTF Lifecycle & Solving Agent Skill for Anti-IDE. Orchestrates tournament workflow (pulling challenges, starting/stopping dynamic containers, ChatGPT triage on Firefox, immediate flag submission) and connects with the reverse-skill playbooks (Pwn, Rev with IDA Pro MCP, Crypto, Web, Forensics).
+description: Autonomous CTF Lifecycle & Solving Agent Skill for Anti-IDE. Orchestrates tournament workflow (pulling challenges, starting/stopping dynamic containers, ChatGPT triage on Firefox, immediate flag submission) and connects with the v0_ctf_knowledge playbooks (Pwn, Rev with IDA Pro MCP, Crypto, Web, Forensics).
 argument-hint: "[pull|auto|chatgpt|status|instance|submit|env] [args...]"
 ---
 
 # Anti-IDE CTF Autonomous Lifecycle & Solver Skill
 
-Unified operational skill enabling the Anti-IDE Agent to autonomously manage competition platforms (CTFd, GZCTF), interact with dynamic Docker containers, triage challenges via ChatGPT Web on Firefox, exploit challenges using the local `reverse-skill` repository, and submit flags immediately.
+Unified operational skill enabling the Anti-IDE Agent to autonomously manage competition platforms (CTFd, GZCTF), interact with dynamic Docker containers, triage challenges via ChatGPT Web on Firefox, exploit challenges using the local `v0_ctf_knowledge` repository, and submit flags immediately.
 
 ---
 
@@ -16,7 +16,7 @@ All commands can be invoked via the workspace launcher `./ctf` (or `python3 ctf_
 
 | Operation | Canonical CLI Command | Purpose |
 | :--- | :--- | :--- |
-| **All-in-One Auto** | `./ctf auto -u <URL> -c "<COOKIE>"` | Đăng nhập, crawl bài, dựng workspace 4 tầng, sync sang `reverse-skill`, sinh prompt ChatGPT cho toàn bộ challenge. |
+| **All-in-One Auto** | `./ctf auto -u <URL> -c "<COOKIE>"` | Đăng nhập, crawl bài, dựng workspace 4 tầng, sync sang `v0_ctf_knowledge`, sinh prompt ChatGPT cho toàn bộ challenge. |
 | **Set Auth / Config** | `./ctf env set -u <URL> -c "<COOKIE>" -t "<TOKEN>"` | Ghi cấu hình vào `.env` cho Anti-IDE và các solver scripts. |
 | **Pull Event** | `./ctf pull -u <URL> -o <DIR>` | Crawl bài, tải đính kèm song song, dựng workspace 4 tầng chuẩn. |
 | **Advisor Init** | `./ctf advisor init <ID>` | Khởi tạo state.json, findings.md, hypotheses.md, experiments.jsonl cho challenge. |
@@ -36,12 +36,12 @@ All commands can be invoked via the workspace launcher `./ctf` (or `python3 ctf_
 Khi User cung cấp **URL** và **Cookie / Token**, Agent sẽ kích hoạt chu trình:
 
 ```text
-[1. Auth & Pull] ---> [2. Triage & ChatGPT Web] ---> [3. Sync reverse-skill] ---> [4. Run Exploits] ---> [5. Submit Flag]
+[1. Auth & Pull] ---> [2. Triage & ChatGPT Web] ---> [3. Sync v0_ctf_knowledge] ---> [4. Run Exploits] ---> [5. Submit Flag]
 ```
 
 ### Bước 1: Tiếp nhận & Đăng nhập (`./ctf auto`)
 - Ghi cấu hình vào `.env` và cào toàn bộ bài tập.
-- Đồng bộ bài tập vào thư mục làm việc của `reverse-skill/work/<category>/<chall_name>/`.
+- Đồng bộ bài tập vào thư mục làm việc của `v0_ctf_knowledge/work/<category>/<chall_name>/`.
 - Báo cáo cho User: Số lượng challenge, điểm số, danh mục.
 
 ### Bước 2: Tự Động Khởi Tạo State & Tham Vấn Strategic Advisor (`./ctf advisor`)
@@ -55,10 +55,10 @@ Khi User cung cấp **URL** và **Cookie / Token**, Agent sẽ kích hoạt chu 
   *(Nếu máy chưa bật debug port, hệ thống tự kích hoạt Fallback đẩy prompt vào Clipboard qua xclip).*
 
 ### Bước 3: Thực Thi Kỹ Thuật (Anti-IDE / OpenCode Executor)
-- Executor đọc `NEXT_ACTIONS` từ `.advisor/guidance.md` và phối hợp với [reverse-skill](file:///home/kali/Documents/cyber_thread/reverse-skill):
+- Executor đọc `NEXT_ACTIONS` từ `.advisor/guidance.md` và phối hợp với [v0_ctf_knowledge](https://github.com/DangGPhuc/v0_ctf_knowledge):
   - **Dynamic Container**: Gọi `./ctf instance start <ID>` lấy IP:PORT.
   - **Reverse Engineering**: Dùng IDA Pro MCP server (`ida_decompile`, `ida_get_xrefs`).
-  - **Pwn / Crypto / Web**: Viết script micro-PoC trong `script/`, hoàn thiện exploit trong `solver/solve.py`.
+  - **Pwn / Crypto / Web**: Viết script micro-PoC trong `work/`, hoàn thiện exploit trong `work/solve.py`.
 - **Báo cáo vòng lặp sau mỗi thực nghiệm**:
   ```bash
   ./ctf advisor report <ID> -e EXP-001 -a "<thao_tac>" -o "<hien_tuong>" -s CONFIRMED -d "<phan_tich>"
@@ -75,8 +75,8 @@ Khi User cung cấp **URL** và **Cookie / Token**, Agent sẽ kích hoạt chu 
   - PAL MCP (`challenge`, `thinkdeep`) đưa ra góc nhìn phản biện độc lập và tự động nạp kết quả vào phiên làm việc của Strategic Advisor để đổi mới chiến lược!
 
 ### Bước 4: Chạy Exploit & Thu hoạch Flag
-- Chạy `python3 solver/solve.py` -> bắt cờ khớp regex format (mặc định `FLAG{...}`).
-- Ghi cờ vào `solver/flag.txt`.
+- Chạy `python3 work/solve.py` (hoặc thông qua `ContainerExecutor`) -> bắt cờ khớp regex format (mặc định `FLAG{...}`).
+- Ghi cờ vào `work/flag.txt`.
 
 ### Bước 5: Nộp Flag Tức Thì (`ctf_submit_right_away`)
 - Thực thi ngay:
@@ -102,9 +102,9 @@ Khi giải một bài tập, Agent **BẮT BUỘC** tuân thủ cấu trúc 4 th
 
 ---
 
-## 4. Tích Hợp Sâu Kho Kỹ Năng [reverse-skill](file:///home/kali/Documents/cyber_thread/reverse-skill)
+## 4. Tích Hợp Sâu Kho Kỹ Năng [v0_ctf_knowledge](https://github.com/DangGPhuc/v0_ctf_knowledge)
 
-Toàn bộ bản sao vật lý của `reverse-skill` đã nằm tại `/home/kali/Documents/cyber_thread/reverse-skill`:
+Toàn bộ bản sao vật lý của `v0_ctf_knowledge` đã nằm tại `v0_ctf_knowledge`:
 - **Pwn**: [.agents/skills/ctf-pwn/](file:///home/kali/Documents/cyber_thread/.agents/skills/ctf-pwn/) (Heap, ROP, Stack, Kernel)
 - **Rev**: [.agents/skills/ctf-rev/](file:///home/kali/Documents/cyber_thread/.agents/skills/ctf-rev/) (IDA Pro MCP Playbook, Z3 Solver, Angr)
 - **Web**: [.agents/skills/ctf-web/](file:///home/kali/Documents/cyber_thread/.agents/skills/ctf-web/) (Blind SQLi, SSTI, Deserialization, Prototype Pollution)

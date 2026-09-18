@@ -9,10 +9,10 @@ description: |
 # CTF Reverse Engineering Suite
 
 ## Playbooks in this Module
-- [z3-solver.md](file:///home/kali/reverse-skill/skills/rev/z3-solver.md): Translating decompiled C / bitwise constraints into Z3 SMT models.
-- [angr-symbolic.md](file:///home/kali/reverse-skill/skills/rev/angr-symbolic.md): Path exploration, avoiding traps, hooking complex library calls.
-- [vm-reversing.md](file:///home/kali/reverse-skill/skills/rev/vm-reversing.md): Custom bytecode architectures, opcode mapping, disassembler/emulator construction.
-- [deobfuscation.md](file:///home/kali/reverse-skill/skills/rev/deobfuscation.md): OLLVM Control Flow Flattening recovery, Bogus Control Flow, Mixed Boolean-Arithmetic (MBA).
-- [anti-analysis.md](file:///home/kali/reverse-skill/skills/rev/anti-analysis.md): Bypassing `ptrace`, `alarm`, `RDTSC`, TLS callbacks, self-modifying code.
-- [ida-mcp-playbook.md](file:///home/kali/reverse-skill/skills/rev/ida-mcp-playbook.md): Autonomous reversing loop with IDA Pro MCP server.
-- [specialized-rev.md](file:///home/kali/reverse-skill/skills/rev/specialized-rev.md): Go binary symbols recovery, Rust structures, Unity IL2CPP, WebAssembly (Wasm), Android APK/smali.
+- [z3-solver.md](v0_ctf_knowledge/references/rev/z3-solver.md): Translating decompiled C / bitwise constraints into Z3 SMT models.
+- [angr-symbolic.md](v0_ctf_knowledge/references/rev/angr-symbolic.md): Path exploration, avoiding traps, hooking complex library calls.
+- [vm-reversing.md](v0_ctf_knowledge/references/rev/vm-reversing.md): Custom bytecode architectures, opcode mapping, disassembler/emulator construction.
+- [deobfuscation.md](v0_ctf_knowledge/references/rev/deobfuscation.md): OLLVM Control Flow Flattening recovery, Bogus Control Flow, Mixed Boolean-Arithmetic (MBA).
+- [anti-analysis.md](v0_ctf_knowledge/references/rev/anti-analysis.md): Bypassing `ptrace`, `alarm`, `RDTSC`, TLS callbacks, self-modifying code.
+- [ida-mcp-playbook.md](v0_ctf_knowledge/references/rev/ida-mcp-playbook.md): Autonomous reversing loop with IDA Pro MCP server.
+- [specialized-rev.md](v0_ctf_knowledge/references/rev/specialized-rev.md): Go binary symbols recovery, Rust structures, Unity IL2CPP, WebAssembly (Wasm), Android APK/smali.
