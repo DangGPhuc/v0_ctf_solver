@@ -75,6 +75,7 @@ class Action(BaseModel):
 class AdvisorGuidance(BaseModel):
     assessment: str = ""
     hypotheses: List[Hypothesis] = Field(default_factory=list)
+    execution_plan: List["ExecutionAction"] = Field(default_factory=list)
     next_actions: List[Action] = Field(default_factory=list)
     requested_evidence: List[str] = Field(default_factory=list)
     stop_conditions: List[str] = Field(default_factory=list)
@@ -93,12 +94,13 @@ class AdvisorResult(BaseModel):
 
 class ExecutionAction(BaseModel):
     kind: Literal[
-        "run_python",
+        "run_solver",
+        "run_python_file",
         "run_binary",
         "read_file",
         "list_files",
-        "tool",
-    ] = "run_python"
+        "analysis_tool",
+    ] = "run_solver"
     argv: List[str] = Field(default_factory=list)
     path: Optional[str] = None
     tool: Optional[str] = None

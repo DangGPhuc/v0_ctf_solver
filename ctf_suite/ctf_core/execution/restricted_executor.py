@@ -7,18 +7,38 @@ from typing import Any, Dict, List, Optional
 from rich.console import Console
 
 from ..models import AdvisorGuidance, ExecutionAction, ExecutionResult
+from .evaluator import ExecutionResultEvaluator
 
 console = Console()
 
 SAFE_ENV_KEYS = ["PATH", "HOME", "LANG", "LC_ALL", "PYTHONPATH"]
+
+# Explicit allowlist of permissible local analysis tools.
+# Arbitrary model-supplied binaries or shell commands outside this set are strictly rejected.
+ALLOWED_ANALYSIS_TOOLS = {
+    "file",
+    "strings",
+    "readelf",
+    "objdump",
+    "checksec",
+    "nm",
+    "ltrace",
+    "strace",
+    "ropper",
+    "seccomp-tools",
+}
 
 class RestrictedLocalExecutor:
     """
     Hardened local script executor.
     Guarantees:
     1. NEVER runs free-form model text via shell=True.
-    2. Strict environment isolation (strips platform tokens, sessions, cookies, GitHub keys).
-    3. Evidence-based result verification (exit code 0 alone is INCONCLUSIVE without evidence).
+    2. Model-generated next_actions prose is NEVER executed. Only structured execution_plan is executable.
+    3. Target paths (run_python_file, run_binary, read_file) must resolve strictly inside work_dir.
+    4. Tools must be explicitly registered in ALLOWED_ANALYSIS_TOOLS; arbitrary executables are rejected.
+    5. Strict environment isolation (strips platform tokens, sessions, cookies, GitHub keys).
+    6. Evidence-based result verification (exit code 0 alone is INCONCLUSIVE without evidence).
+    NOTE: restricted-local is NOT a full sandbox (a local Python script can still access files/network).
     """
 
     def __init__(
@@ -35,11 +55,30 @@ class RestrictedLocalExecutor:
         if "PATH" not in env:
             env["PATH"] = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
         if extra_vars:
-            # Block forbidden keys
             for k, v in extra_vars.items():
-                if not any(bad in k.upper() for bad in ["TOKEN", "COOKIE", "SECRET", "AUTH", "PASS"]):
+                if not any(bad in k.upper() for bad in ["TOKEN", "COOKIE", "SECRET", "AUTH", "PASS", "KEY"]):
                     env[k] = str(v)
         return env
+
+    def _resolve_and_validate_path(self, target: Optional[str], work_dir: Path) -> Path:
+        """
+        Validates that a path is strictly contained within work_dir.
+        Rejects traversal (../../), home directory paths (~), and absolute host paths.
+        """
+        if not target:
+            raise ValueError("Target path must not be empty")
+
+        p = Path(target)
+        if p.is_absolute():
+            resolved = p.resolve()
+        else:
+            resolved = (work_dir / p).resolve()
+
+        resolved_work = work_dir.resolve()
+        if not resolved.is_relative_to(resolved_work):
+            raise PermissionError(f"Path traversal blocked: target '{target}' resolves to '{resolved}', outside '{resolved_work}'")
+
+        return resolved
 
     def execute(self, challenge_context: Dict[str, Any], guidance: AdvisorGuidance) -> ExecutionResult:
         if "work_dir" in challenge_context:
@@ -65,127 +104,141 @@ class RestrictedLocalExecutor:
             )
 
         actions_performed: List[str] = []
-        observed_logs: List[str] = []
-        evidence_found: List[str] = []
-        flag_candidates: List[str] = []
+        stdout_acc: List[str] = []
+        stderr_acc: List[str] = []
         final_return_code: Optional[int] = None
-        stdout_tail: str = ""
-        stderr_tail: str = ""
+        timed_out = False
+        error_msg: Optional[str] = None
 
-        # Default task: execute solve.py in work_dir if no guidance actions
-        solve_script = work_dir / "solve.py"
+        # Build execution list strictly from guidance.execution_plan
+        # Notice: guidance.next_actions is human-readable and MUST NOT be executed.
         actions_to_run: List[ExecutionAction] = []
 
-        if guidance.next_actions:
-            for act in guidance.next_actions:
-                cmd = act.command_or_task.strip()
-                if cmd.startswith("python3 ") or cmd == "python3":
-                    parts = cmd.split()
-                    actions_to_run.append(ExecutionAction(kind="run_python", argv=parts, timeout=self.timeout))
-                elif cmd.startswith("./"):
-                    actions_to_run.append(ExecutionAction(kind="run_binary", argv=[cmd], timeout=self.timeout))
-                else:
-                    parts = cmd.split()
-                    if parts:
-                        actions_to_run.append(ExecutionAction(kind="tool", argv=parts, timeout=self.timeout))
-        elif solve_script.is_file():
-            actions_to_run.append(ExecutionAction(
-                kind="run_python",
-                argv=["python3", "solve.py"],
-                path="solve.py",
-                timeout=self.timeout
-            ))
+        if getattr(guidance, "execution_plan", None):
+            actions_to_run.extend(guidance.execution_plan)
         else:
-            actions_to_run.append(ExecutionAction(
-                kind="list_files",
-                argv=["ls", "-la"],
-                timeout=10
-            ))
+            # Safe default when execution_plan is absent: run existing work/solve.py if present
+            solve_script = work_dir / "solve.py"
+            if solve_script.is_file():
+                actions_to_run.append(ExecutionAction(
+                    kind="run_solver",
+                    argv=["python3", "solve.py"],
+                    path="solve.py",
+                    timeout=self.timeout,
+                ))
+            else:
+                actions_to_run.append(ExecutionAction(
+                    kind="list_files",
+                    argv=["ls", "-la"],
+                    timeout=10,
+                ))
 
         safe_env = self._build_safe_env(challenge_context.get("env_vars"))
 
         for action in actions_to_run:
-            argv = action.argv
+            kind = action.kind
+            argv: List[str] = []
+
+            try:
+                if kind in ["run_solver", "run_python_file"]:
+                    target_script = self._resolve_and_validate_path(action.path or "solve.py", work_dir)
+                    if not target_script.is_file():
+                        raise FileNotFoundError(f"Python target file not found: {target_script}")
+                    rel_target = str(target_script.relative_to(work_dir))
+                    argv = ["python3", rel_target]
+                    if action.argv and len(action.argv) > 1:
+                        # Allow extra arguments after script name if clean
+                        argv.extend([arg for arg in action.argv[1:] if not any(c in arg for c in [";", "&", "|", "`", "$"])])
+
+                elif kind == "run_binary":
+                    target_bin = self._resolve_and_validate_path(action.path or (action.argv[0] if action.argv else None), work_dir)
+                    if not target_bin.is_file():
+                        raise FileNotFoundError(f"Binary target file not found: {target_bin}")
+                    rel_target = f"./{target_bin.relative_to(work_dir)}"
+                    argv = [rel_target]
+                    if action.argv and len(action.argv) > 1:
+                        argv.extend(action.argv[1:])
+
+                elif kind == "read_file":
+                    target_file = self._resolve_and_validate_path(action.path or (action.argv[0] if action.argv else None), work_dir)
+                    if not target_file.is_file():
+                        raise FileNotFoundError(f"Read target file not found: {target_file}")
+                    rel_target = str(target_file.relative_to(work_dir))
+                    argv = ["cat", rel_target]
+
+                elif kind == "list_files":
+                    argv = ["ls", "-la"]
+
+                elif kind == "analysis_tool":
+                    tool_name = action.tool or (action.argv[0] if action.argv else None)
+                    if not tool_name or tool_name not in ALLOWED_ANALYSIS_TOOLS:
+                        raise PermissionError(f"Analysis tool '{tool_name}' is not in allowed registry: {sorted(ALLOWED_ANALYSIS_TOOLS)}")
+                    if not shutil.which(tool_name):
+                        raise FileNotFoundError(f"Analysis tool '{tool_name}' not installed on host PATH")
+
+                    # Sanitize tool arguments
+                    clean_argv = [tool_name]
+                    for arg in action.argv[1:]:
+                        # If an argument is a path, validate it doesn't escape work_dir
+                        if "/" in arg or ".." in arg:
+                            resolved_arg = self._resolve_and_validate_path(arg, work_dir)
+                            clean_argv.append(str(resolved_arg.relative_to(work_dir)))
+                        else:
+                            clean_argv.append(arg)
+                    argv = clean_argv
+
+                else:
+                    raise ValueError(f"Unsupported execution action kind: '{kind}'")
+
+            except Exception as e:
+                console.print(f"[bold red]❌ Rejected execution action ({kind}): {e}[/bold red]")
+                error_msg = str(e)
+                final_return_code = -1
+                actions_performed.append(f"rejected:{kind}:{e}")
+                break
+
             actions_performed.append(" ".join(argv))
             console.print(f"[dim]⚡ [RestrictedExecutor] Executing (shell=False): {' '.join(argv)}[/dim]")
 
             try:
                 proc = subprocess.run(
                     argv,
-                    shell=False,  # P0 HARDENED: NEVER shell=True
+                    shell=False,
                     cwd=str(work_dir),
                     env=safe_env,
                     capture_output=True,
                     text=True,
-                    timeout=action.timeout
+                    timeout=action.timeout or self.timeout,
                 )
                 final_return_code = proc.returncode
-                stdout_tail = proc.stdout[-1500:] if proc.stdout else ""
-                stderr_tail = proc.stderr[-1500:] if proc.stderr else ""
-
-                combined_out = (proc.stdout or "") + "\n" + (proc.stderr or "")
-
-                # 1. Flag Candidate extraction
-                search_pattern = self.flag_format_regex.strip("^$")
-                matches = re.findall(search_pattern, combined_out)
-                for m in matches:
-                    if m not in flag_candidates:
-                        flag_candidates.append(m)
-
-                # Check work/flag.txt
-                flag_file = work_dir / "flag.txt"
-                if flag_file.is_file():
-                    content = flag_file.read_text(encoding="utf-8").strip()
-                    if content and content not in flag_candidates:
-                        flag_candidates.append(content)
-
-                # 2. Evidence extraction
-                for req_ev in guidance.requested_evidence:
-                    if req_ev and req_ev.lower() in combined_out.lower():
-                        evidence_found.append(f"Matched requested evidence: '{req_ev}'")
-
-                for act_def in guidance.next_actions:
-                    if act_def.expected_evidence and act_def.expected_evidence.lower() in combined_out.lower():
-                        evidence_found.append(f"Observed expected evidence: '{act_def.expected_evidence}'")
-
-                observed_logs.append(f"Return code {proc.returncode}. Output length: {len(combined_out)}")
+                if proc.stdout:
+                    stdout_acc.append(proc.stdout)
+                if proc.stderr:
+                    stderr_acc.append(proc.stderr)
 
             except subprocess.TimeoutExpired:
                 final_return_code = -9
-                stderr_tail = f"Command timed out after {action.timeout}s"
-                observed_logs.append(f"Command timed out ({action.timeout}s)")
+                timed_out = True
+                stderr_acc.append(f"Command timed out after {action.timeout}s")
+                break
             except Exception as e:
                 final_return_code = -1
-                stderr_tail = str(e)
-                observed_logs.append(f"Execution failed: {e}")
+                error_msg = str(e)
+                stderr_acc.append(str(e))
+                break
 
-        # Determine evidence-based status
-        if flag_candidates:
-            status = "FLAG_FOUND"
-        elif final_return_code == -9 or "timed out" in " ".join(observed_logs).lower():
-            status = "ERROR"
-        elif final_return_code == 0 and evidence_found:
-            status = "CONFIRMED"
-        elif final_return_code == 0:
-            # P0: Exit code 0 alone without evidence is INCONCLUSIVE
-            status = "INCONCLUSIVE"
-        else:
-            status = "REJECTED"
+        full_stdout = "\n".join(stdout_acc)
+        full_stderr = "\n".join(stderr_acc)
 
-        obs_text = " | ".join(observed_logs)
-        if stdout_tail:
-            obs_text += f"\nStdout: {stdout_tail}"
-        if stderr_tail:
-            obs_text += f"\nStderr: {stderr_tail}"
-
-        return ExecutionResult(
+        return ExecutionResultEvaluator.build_result(
             experiment_id=experiment_id,
-            status=status,
             return_code=final_return_code,
-            actions=actions_performed,
-            observed=obs_text,
-            evidence=evidence_found,
-            flag_candidates=flag_candidates,
-            stdout_tail=stdout_tail,
-            stderr_tail=stderr_tail,
+            stdout=full_stdout,
+            stderr=full_stderr,
+            actions_performed=actions_performed,
+            work_dir=work_dir,
+            guidance=guidance,
+            flag_format_regex=self.flag_format_regex,
+            timed_out=timed_out,
+            error_message=error_msg,
         )

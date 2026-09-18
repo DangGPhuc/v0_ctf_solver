@@ -50,9 +50,11 @@ class ChallengeOrchestrator:
         api_token: Optional[str] = None,
         flag_format: Optional[str] = None,
         max_iterations_per_chall: int = 5,
-        reverse_skill_dir: Optional[Path] = None,
         runtime_manager: Optional[RuntimeManager] = None,
         executor: Optional[ExecutorAdapter] = None,
+        executor_mode: str = "auto",
+        allow_local_fallback: bool = False,
+        allow_network: bool = False,
         event_id: Optional[str] = None,
         cleanup_policy: str = "immediate",  # immediate, event_end, manual
         platform: Optional[Any] = None,
@@ -79,12 +81,6 @@ class ChallengeOrchestrator:
         else:
             self.event_id = "default_event"
 
-        self.reverse_skill_dir = (
-            Path(reverse_skill_dir).resolve()
-            if reverse_skill_dir
-            else self.workspace_dir.parent / "reverse-skill"
-        )
-        
         self.platform = platform
         if self.platform is None and self.platform_url:
             p_type = detect_platform_type(self.platform_url, self.session_cookie)
@@ -107,11 +103,15 @@ class ChallengeOrchestrator:
         )
         self.advisor = advisor or AdvisorService(
             workspace_dir=self.workspace_dir,
-            reverse_skill_dir=self.reverse_skill_dir,
             runtime_manager=self.runtime_manager,
             event_id=self.event_id,
         )
-        self.executor = executor or get_executor(flag_format_regex=self.flag_format)
+        self.executor = executor or get_executor(
+            mode=executor_mode,
+            flag_format_regex=self.flag_format,
+            allow_local_fallback=allow_local_fallback,
+            allow_network=allow_network,
+        )
 
     def sync_challenges(self, download_attachments: bool = False) -> List[Dict[str, Any]]:
         """Fetch challenges directly from platform adapter without creating eager directories."""
@@ -209,7 +209,11 @@ class ChallengeOrchestrator:
             console.print(f"\n[bold magenta]─── [ROUND {iteration}/{self.max_iterations}] STRATEGIC ADVISOR CONSULTATION ───[/bold magenta]")
             
             consult_res = self.advisor.consult(cid)
-            status = getattr(consult_res, "status", None) if not isinstance(consult_res, dict) else consult_res.get("status")
+            if isinstance(consult_res, dict):
+                status = consult_res.get("status") or ("READY" if consult_res.get("guidance") else None)
+            else:
+                status = getattr(consult_res, "status", None)
+
             if status == "WAITING_FOR_MANUAL_RESPONSE":
                 console.print(Panel(
                     f"[bold yellow]⏸ AWAITING MANUAL STRATEGIC GUIDANCE[/bold yellow]\n\n"
@@ -225,21 +229,31 @@ class ChallengeOrchestrator:
                 ))
                 return False
 
-            if isinstance(consult_res, dict):
-                guidance: Optional[AdvisorGuidance] = consult_res.get("guidance")
-                active_hypo = consult_res.get("active_hypothesis")
-            else:
-                guidance = getattr(consult_res, "guidance", None)
-                active_hypo = guidance.hypotheses[0].statement if guidance and guidance.hypotheses else None
+            if status == "PROVIDER_UNAVAILABLE":
+                console.print(Panel(
+                    f"[bold yellow]⚠️ ADVISOR PROVIDER UNAVAILABLE[/bold yellow]\n\n"
+                    f"Challenge: [bold]{cname}[/bold] (ID: {cid})\n"
+                    f"Strategic advisor provider could not be reached.\n"
+                    f"Automatic execution is halted to avoid untrusted guesswork.",
+                    title="[bold yellow]⏸ PROVIDER UNAVAILABLE[/bold yellow]",
+                    border_style="yellow",
+                    expand=False,
+                ))
+                return False
 
+            if status == "ERROR":
+                err_msg = getattr(consult_res, "message", "") if hasattr(consult_res, "message") else ""
+                console.print(f"[bold red]❌ Advisor encountered an unrecoverable error: {err_msg}. Stopping round.[/bold red]")
+                return False
+
+            if status != "READY":
+                console.print(f"[bold yellow]⚠️ Advisor state is '{status}' (not READY). Execution halted.[/bold yellow]")
+                return False
+
+            guidance = getattr(consult_res, "guidance", None) if not isinstance(consult_res, dict) else consult_res.get("guidance")
             if not guidance:
-                guidance = AdvisorGuidance(
-                    assessment=active_hypo or "Explore challenge",
-                    hypotheses=[Hypothesis(id="H1", statement=active_hypo or "Analyze binary and service")],
-                    next_actions=[Action(type="command", command_or_task="python3 solve.py")],
-                    requested_evidence=["Flag output"],
-                    stop_conditions=["Flag found"],
-                )
+                console.print(f"[bold red]❌ Advisor status is READY but no guidance object exists. Halting execution.[/bold red]")
+                return False
 
             # Build challenge context for executor
             challenge_context = {
