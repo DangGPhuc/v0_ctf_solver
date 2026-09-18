@@ -179,6 +179,7 @@ class TestLifecycleClosedLoop(unittest.TestCase):
             cleanup_policy="immediate",
             platform=fake_platform,
             advisor=fake_advisor,
+            flag_format=r"^FLAG\{.+\}$",
         )
 
         # Step 3: Select only the lowest-point challenge (Baby Rev, id=1, 100 pts)

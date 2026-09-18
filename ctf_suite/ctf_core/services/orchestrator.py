@@ -9,15 +9,13 @@ from rich.panel import Panel
 from rich.table import Table
 
 from ..config import load_config
-from ..models import Challenge, SubmitResult, AdvisorGuidance, ExecutionResult
-from ..workspace.repo import WorkspaceRepo
+from ..models import Challenge, SubmitResult, AdvisorGuidance, ExecutionResult, AdvisorResult
 from ..runtime.manager import RuntimeManager, sanitize_path_component
 from ..platforms.registry import create_platform, detect_platform_type
 from ..execution.adapter import ExecutorAdapter
-from ..execution.local_executor import LocalScriptExecutor
+from ..execution import get_executor
 from .submit_service import SubmitService
 from .advisor_service import AdvisorService
-from .chatgpt_service import ChatGPTService
 
 console = Console()
 
@@ -87,8 +85,6 @@ class ChallengeOrchestrator:
             else self.workspace_dir.parent / "reverse-skill"
         )
         
-        self.repo = WorkspaceRepo(self.workspace_dir)
-        
         self.platform = platform
         if self.platform is None and self.platform_url:
             p_type = detect_platform_type(self.platform_url, self.session_cookie)
@@ -115,11 +111,7 @@ class ChallengeOrchestrator:
             runtime_manager=self.runtime_manager,
             event_id=self.event_id,
         )
-        self.chatgpt = ChatGPTService(
-            workspace_dir=self.workspace_dir,
-            reverse_skill_dir=self.reverse_skill_dir,
-        )
-        self.executor = executor or LocalScriptExecutor(flag_format_regex=self.flag_format)
+        self.executor = executor or get_executor(flag_format_regex=self.flag_format)
 
     def sync_challenges(self, download_attachments: bool = False) -> List[Dict[str, Any]]:
         """Fetch challenges directly from platform adapter without creating eager directories."""
@@ -159,11 +151,10 @@ class ChallengeOrchestrator:
         return unsolved
 
     def _get_unsolved_challenges(self) -> List[Dict[str, Any]]:
-        """Reads unsolved challenges from runtime or legacy repo."""
+        """Reads unsolved challenges from runtime state."""
         unsolved = []
         target_cat = self.category.lower() if self.category else None
 
-        # Check runtime state first
         for chall_st in self.runtime_manager.list_materialized_challenges(self.event_id):
             if chall_st.get("solved_by_me"):
                 continue
@@ -176,22 +167,6 @@ class ChallengeOrchestrator:
                 "category": cat,
                 "points": chall_st.get("points", 0),
             })
-
-        if not unsolved:
-            for cdir in self.repo.iter_challenge_dirs():
-                meta = self.repo.read_challenge_metadata(cdir) or {}
-                if meta.get("solved_by_me"):
-                    continue
-                cat = (meta.get("category") or "Misc").lower()
-                if target_cat and cat != target_cat:
-                    continue
-                unsolved.append({
-                    "id": str(meta.get("id")),
-                    "name": meta.get("name", cdir.name),
-                    "category": meta.get("category", "Misc"),
-                    "points": meta.get("points", 0),
-                    "dir": cdir,
-                })
 
         unsolved.sort(key=lambda x: int(x.get("points") or 0))
         return unsolved
@@ -233,13 +208,38 @@ class ChallengeOrchestrator:
         for iteration in range(1, self.max_iterations + 1):
             console.print(f"\n[bold magenta]─── [ROUND {iteration}/{self.max_iterations}] STRATEGIC ADVISOR CONSULTATION ───[/bold magenta]")
             
-            # Consult Strategic Advisor
             consult_res = self.advisor.consult(cid)
-            guidance: AdvisorGuidance = consult_res.get("guidance") or AdvisorGuidance(
-                assessment=consult_res.get("active_hypothesis") or "Explore challenge",
-                hypotheses=[],
-                next_actions=[]
-            )
+            status = getattr(consult_res, "status", None) if not isinstance(consult_res, dict) else consult_res.get("status")
+            if status == "WAITING_FOR_MANUAL_RESPONSE":
+                console.print(Panel(
+                    f"[bold yellow]⏸ AWAITING MANUAL STRATEGIC GUIDANCE[/bold yellow]\n\n"
+                    f"Challenge: [bold]{cname}[/bold] (ID: {cid})\n"
+                    f"The strategic prompt has been copied to your clipboard and Firefox opened.\n"
+                    f"Once ChatGPT responds, paste it into:\n"
+                    f"  [cyan]{cpath}/.advisor/guidance.md[/cyan]\n"
+                    f"or run: [bold cyan]ctf advisor import-response {cid} <response_file>[/bold cyan]\n"
+                    f"Then resume with: [bold cyan]ctf solve {cid}[/bold cyan]",
+                    title="[bold yellow]✋ MANUAL INTERVENTION REQUIRED[/bold yellow]",
+                    border_style="yellow",
+                    expand=False,
+                ))
+                return False
+
+            if isinstance(consult_res, dict):
+                guidance: Optional[AdvisorGuidance] = consult_res.get("guidance")
+                active_hypo = consult_res.get("active_hypothesis")
+            else:
+                guidance = getattr(consult_res, "guidance", None)
+                active_hypo = guidance.hypotheses[0].statement if guidance and guidance.hypotheses else None
+
+            if not guidance:
+                guidance = AdvisorGuidance(
+                    assessment=active_hypo or "Explore challenge",
+                    hypotheses=[Hypothesis(id="H1", statement=active_hypo or "Analyze binary and service")],
+                    next_actions=[Action(type="command", command_or_task="python3 solve.py")],
+                    requested_evidence=["Flag output"],
+                    stop_conditions=["Flag found"],
+                )
 
             # Build challenge context for executor
             challenge_context = {

@@ -1,0 +1,19 @@
+id: ida-pro-mcp
+name: IDA Pro Model Context Protocol Server
+version: 2.0.0
+license: MIT
+authors:
+  - mrexodia
+  - can1357
+source:
+  type: git
+  url: https://github.com/mrexodia/ida-pro-mcp
+  ref: 2.0.0
+description: Autonomous IDA Pro reversing MCP integration for LLM agents.
+install:
+  type: script
+  steps:
+    - uv pip install "idapro>=0.0.9" "tomli-w>=1.0.0" "mcp>=1.0"
+healthcheck:
+  command: python3 -c "import idapro, tomli_w; print('IDA Pro MCP dependencies verified')"
+target_dir: ~/.local/share/v0_ctf_solver/tools/ida-pro-mcp

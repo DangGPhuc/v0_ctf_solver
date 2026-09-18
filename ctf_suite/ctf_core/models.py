@@ -80,6 +80,30 @@ class AdvisorGuidance(BaseModel):
     stop_conditions: List[str] = Field(default_factory=list)
     raw_text: Optional[str] = None
 
+class AdvisorResult(BaseModel):
+    status: Literal[
+        "READY",
+        "WAITING_FOR_MANUAL_RESPONSE",
+        "PROVIDER_UNAVAILABLE",
+        "ERROR",
+    ]
+    guidance: Optional[AdvisorGuidance] = None
+    provider: str = "oracle"
+    message: str = ""
+
+class ExecutionAction(BaseModel):
+    kind: Literal[
+        "run_python",
+        "run_binary",
+        "read_file",
+        "list_files",
+        "tool",
+    ] = "run_python"
+    argv: List[str] = Field(default_factory=list)
+    path: Optional[str] = None
+    tool: Optional[str] = None
+    timeout: int = 60
+
 class ExecutionResult(BaseModel):
     experiment_id: str
     status: Literal[
@@ -89,6 +113,7 @@ class ExecutionResult(BaseModel):
         "FLAG_FOUND",
         "ERROR",
     ]
+    return_code: Optional[int] = None
     actions: List[str] = Field(default_factory=list)
     observed: str = ""
     evidence: List[str] = Field(default_factory=list)

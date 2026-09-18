@@ -10,7 +10,7 @@ from ctf_core.prompts.linter import PromptLinter, LintViolation
 from ctf_core.prompts.templates import CTFTemplates
 from ctf_core.prompts.compiler import PromptCompiler
 from ctf_core.services.advisor_service import AdvisorService
-from ctf_core.workspace.builder import WorkspaceBuilder
+from ctf_core.runtime.manager import RuntimeManager
 from ctf_core.models import Challenge
 
 
@@ -107,8 +107,9 @@ class TestPromptMasterEngine(unittest.TestCase):
             description="Crack the RSA vault",
             connection_info="nc 10.10.10.10 5000",
         )
-        WorkspaceBuilder.create_challenge_workspace(self.test_dir, chall)
-        service = AdvisorService(workspace_dir=self.test_dir)
+        rm = RuntimeManager(base_dir=self.test_dir / ".runtime")
+        rm.materialize_challenge("default_event", chall)
+        service = AdvisorService(workspace_dir=self.test_dir, runtime_manager=rm, event_id="default_event")
         service.init_challenge_advisor(202)
 
         capsule = service.get_state_capsule(202)

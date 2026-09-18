@@ -10,27 +10,54 @@ from ..models import KnowledgeCard, KnowledgeCardFingerprint, KnowledgeCardSourc
 from .tree import DiscoveryNode, DiscoveryTree
 
 
+from ..knowledge.outbox import KnowledgeOutbox
+
 class KnowledgeCompiler:
     """
     Distills and compiles practical solving experience from solved CTF challenges
-    into Declarative Technique Cards following a strict structured YAML schema.
+    into Declarative Technique Cards staged into local KnowledgeOutbox.
     
     CRITICAL: Never persists real flags, credentials, tokens, full binaries or raw logs.
     """
 
-    def __init__(self, kb_dir: Optional[Path] = None):
-        self.kb_dir = (
-            Path(kb_dir).resolve()
-            if kb_dir
-            else Path(__file__).resolve().parents[2] / "knowledge_base"
-        )
-        self.cards_dir = self.kb_dir / "cards"
-        self.cards_dir.mkdir(parents=True, exist_ok=True)
-        self.index_file = self.kb_dir / "index.json"
+    def __init__(self, outbox: Optional[KnowledgeOutbox] = None, kb_dir: Optional[Path] = None):
+        self.outbox = outbox or KnowledgeOutbox()
+        # Fallback local directory for testing if needed
+        self.kb_dir = Path(kb_dir).resolve() if kb_dir else None
+        if self.kb_dir:
+            self.cards_dir = self.kb_dir / "cards"
+            self.cards_dir.mkdir(parents=True, exist_ok=True)
+            self.index_file = self.kb_dir / "index.json"
+        else:
+            self.cards_dir = None
+            self.index_file = None
 
     def _sanitize_id(self, text: str) -> str:
         s = re.sub(r"[^a-zA-Z0-9_\-]+", "_", text).strip("_").lower()
         return s or "card"
+
+    def compile_card(
+        self,
+        challenge_id: Any,
+        challenge_meta: Dict[str, Any],
+        execution_history: Optional[List[Any]] = None,
+        solve_script: Optional[str] = None,
+    ) -> Path:
+        name = challenge_meta.get("name", f"Challenge_{challenge_id}")
+        category = challenge_meta.get("category", "misc")
+        tags = challenge_meta.get("tags", [])
+        signals = challenge_meta.get("findings", [])
+        strategy = challenge_meta.get("strategy", ["Execute verified exploit payload"])
+
+        return self.outbox.stage_candidate(
+            challenge_id=challenge_id,
+            title=name,
+            category=category,
+            strategy=strategy,
+            signals=signals,
+            solve_script=solve_script,
+            tags=tags,
+        )
 
     def compile_challenge(
         self,
@@ -111,22 +138,33 @@ class KnowledgeCompiler:
             ),
         )
 
-        cat_dir = self.cards_dir / cat
-        cat_dir.mkdir(parents=True, exist_ok=True)
-        card_file = cat_dir / f"{safe_id}.yaml"
-        
-        card_dict = card.model_dump()
-        card_file.write_text(yaml.safe_dump(card_dict, sort_keys=False, allow_unicode=True), encoding="utf-8")
-
-        self._update_index(
+        outbox_file = self.outbox.stage_candidate(
             challenge_id=tree.challenge_id,
-            challenge_name=chall_name,
+            title=chall_name,
             category=cat,
-            card_path=card_file,
-            card_id=safe_id,
+            strategy=strategy_steps or ["Initial static triage", "Targeted payload construction"],
+            signals=signals,
+            preconditions=[],
+            solve_script=solver_code,
+            tags=fp.tags,
         )
 
-        return card_file
+        if self.cards_dir and self.index_file:
+            cat_dir = self.cards_dir / cat
+            cat_dir.mkdir(parents=True, exist_ok=True)
+            card_file = cat_dir / f"{safe_id}.yaml"
+            card_dict = card.model_dump()
+            card_file.write_text(yaml.safe_dump(card_dict, sort_keys=False, allow_unicode=True), encoding="utf-8")
+            self._update_index(
+                challenge_id=tree.challenge_id,
+                challenge_name=chall_name,
+                category=cat,
+                card_path=card_file,
+                card_id=safe_id,
+            )
+            return card_file
+
+        return outbox_file
 
     def _update_index(
         self,

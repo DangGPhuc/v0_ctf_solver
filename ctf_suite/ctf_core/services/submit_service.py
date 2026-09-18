@@ -3,7 +3,7 @@ import hashlib
 import json
 import os
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from rich.console import Console
@@ -12,7 +12,6 @@ from rich.text import Text
 
 from ..models import SubmitResult
 from ..platforms.registry import create_platform, detect_platform_type
-from ..workspace.repo import WorkspaceRepo
 from ..runtime.manager import RuntimeManager
 
 console = Console()
@@ -20,7 +19,6 @@ console = Console()
 class SubmitService:
     def __init__(
         self,
-        workspace_dir: Path,
         platform_url: str,
         session_cookie: Optional[str] = None,
         api_token: Optional[str] = None,
@@ -29,12 +27,16 @@ class SubmitService:
         runtime_manager: Optional[RuntimeManager] = None,
         event_id: Optional[str] = None,
         platform: Optional[Any] = None,
+        workspace_dir: Optional[Path] = None,  # Kept for backward compatibility
     ):
-        self.workspace_dir = Path(workspace_dir).resolve()
         self.flag_format = flag_format or r"^FLAG\{.+\}$"
-        self.runtime_manager = runtime_manager or RuntimeManager()
+        if runtime_manager is not None:
+            self.runtime_manager = runtime_manager
+        elif workspace_dir is not None:
+            self.runtime_manager = RuntimeManager(base_dir=Path(workspace_dir) / ".runtime")
+        else:
+            self.runtime_manager = RuntimeManager()
         self.event_id = event_id or "default_event"
-        self.repo = WorkspaceRepo(self.workspace_dir)
         
         if platform is not None:
             self.platform = platform
@@ -46,12 +48,13 @@ class SubmitService:
                 session_cookie=session_cookie,
                 api_token=api_token
             )
-        # Place ledger in runtime event directory if available, else workspace
+        
+        # Ensure event path exists in runtime
         epath = self.runtime_manager.event_path(self.event_id)
-        if epath.exists():
-            self.ledger_file = epath / ".submitted_flags.jsonl"
-        else:
-            self.ledger_file = self.workspace_dir / ".submitted_flags.jsonl"
+        if not epath.exists():
+            self.runtime_manager.start_event(self.event_id)
+            
+        self.ledger_file = epath / ".submitted_flags.jsonl"
         self._ensure_secure_file(self.ledger_file)
 
     def _ensure_secure_file(self, file_path: Path):
@@ -63,12 +66,7 @@ class SubmitService:
                 pass
 
     def validate_format(self, flag: str) -> bool:
-        """
-        Validate flag format strictly:
-        - Must not contain template placeholders (FLAG{...}, insert_flag, etc.)
-        - Must match flag regex
-        - Must not contain control/newline characters
-        """
+        """Validate flag format strictly."""
         if not flag or not isinstance(flag, str):
             return False
         flag = flag.strip()
@@ -83,52 +81,70 @@ class SubmitService:
 
         try:
             return bool(re.fullmatch(self.flag_format, flag))
-        except Exception:
+        except re.error:
             return "{" in flag and flag.endswith("}")
 
-    def _get_flag_hash(self, challenge_id: Any, flag: str) -> str:
-        data = f"{challenge_id}:{flag.strip()}".encode("utf-8")
-        return hashlib.sha256(data).hexdigest()
+    def _hash_flag(self, challenge_id: Any, flag: str) -> str:
+        """Hash challenge_id and flag for deduplication without storing plaintext in disk ledger."""
+        return hashlib.sha256(f"{challenge_id}:{flag.strip()}".encode("utf-8")).hexdigest()
+
+    def _mask_flag(self, flag: str) -> str:
+        """Mask flag string for safe display/logging."""
+        flag = flag.strip()
+        if len(flag) <= 8:
+            return "***"
+        prefix = flag[:5]
+        suffix = flag[-2:]
+        return f"{prefix}***{suffix}"
 
     def has_been_submitted(self, challenge_id: Any, flag: str) -> Optional[str]:
         """
-        Check whether this flag has already been submitted for challenge_id.
-        Treats 'ratelimited', 'auth_failed', and 'error' as retryable.
-        Uses file locking for concurrency protection.
+        Check if (challenge_id, flag) has been submitted.
+        Returns the previous verdict if it was a final verdict, or None if retryable.
         """
         if not self.ledger_file.exists():
             return None
 
-        target_hash = self._get_flag_hash(challenge_id, flag)
+        target_hash = self._hash_flag(challenge_id, flag)
         lock_file = self.ledger_file.with_suffix(".lock")
         try:
             with open(lock_file, "w") as lf:
                 fcntl.flock(lf.fileno(), fcntl.LOCK_SH)
                 try:
+                    latest_verdict = None
                     for line in self.ledger_file.read_text(encoding="utf-8").splitlines():
-                        if not line.strip():
+                        line = line.strip()
+                        if not line:
                             continue
-                        entry = json.loads(line)
-                        if entry.get("hash") == target_hash:
-                            verdict = entry.get("verdict")
-                            # Retryable on temporary failures
-                            if verdict not in ["ratelimited", "auth_failed", "error"]:
-                                return verdict
+                        try:
+                            record = json.loads(line)
+                            if record.get("hash") == target_hash or record.get("flag_hash") == target_hash:
+                                v = record.get("verdict")
+                                if v in ["ratelimited", "auth_failed", "error", "invalid_format"]:
+                                    latest_verdict = None
+                                else:
+                                    latest_verdict = v
+                        except json.JSONDecodeError:
+                            continue
+                    return latest_verdict
                 finally:
                     fcntl.flock(lf.fileno(), fcntl.LOCK_UN)
         except Exception:
             pass
+
         return None
 
     def _record_submission(self, challenge_id: Any, flag: str, result: SubmitResult):
-        """Record submission with hash-only and concurrency protection."""
+        """Append submission event to .submitted_flags.jsonl."""
         flag_clean = flag.strip()
-        masked = flag_clean[:6] + "..." + flag_clean[-4:] if len(flag_clean) > 12 else "***"
+        h = self._hash_flag(challenge_id, flag_clean)
         entry = {
-            "timestamp": datetime.now().isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
             "challenge_id": str(challenge_id),
-            "flag_masked": masked,
-            "hash": self._get_flag_hash(challenge_id, flag_clean),
+            "challenge_name": result.challenge_name,
+            "flag_masked": self._mask_flag(flag_clean),
+            "hash": h,
+            "flag_hash": h,
             "verdict": result.verdict,
             "message": result.message
         }
@@ -149,15 +165,10 @@ class SubmitService:
         flag = flag.strip()
         chall_name = f"ID: {challenge_id}"
         
-        # Check runtime state first
+        # Check runtime state
         st = self.runtime_manager.read_challenge_state(self.event_id, challenge_id)
         if st and st.get("name"):
             chall_name = f"{st.get('name')} (ID: {challenge_id})"
-        else:
-            chall_dir = self.repo.find_challenge_dir(challenge_id)
-            if chall_dir:
-                meta = self.repo.read_challenge_metadata(chall_dir) or {}
-                chall_name = f"{meta.get('name', '')} (ID: {challenge_id})"
 
         console.print(f"[bold cyan]🚩 Processing flag submission for [yellow]{chall_name}[/yellow]...[/bold cyan]")
 
@@ -165,7 +176,7 @@ class SubmitService:
         is_valid = self.validate_format(flag)
         if not is_valid:
             if strict:
-                console.print(f"[bold red]❌ SUBMISSION REJECTED: Flag '{flag}' does not match format '{self.flag_format}' or is a placeholder![/bold red]")
+                console.print(f"[bold red]❌ SUBMISSION REJECTED: Flag does not match format '{self.flag_format}' or is a placeholder![/bold red]")
                 return SubmitResult(
                     verdict="invalid_format",
                     message=f"Flag does not match format '{self.flag_format}'.",
@@ -174,7 +185,7 @@ class SubmitService:
                     flag=flag
                 )
             else:
-                console.print(f"[bold yellow]⚠️ Warning: Flag '{flag}' does not match format '{self.flag_format}'![/bold yellow]")
+                console.print(f"[bold yellow]⚠️ Warning: Flag does not match format '{self.flag_format}'![/bold yellow]")
 
         # 2. Concurrency-protected Deduplication
         prev_verdict = self.has_been_submitted(challenge_id, flag)
@@ -216,10 +227,8 @@ class SubmitService:
             self.runtime_manager.update_challenge_state(
                 self.event_id,
                 challenge_id,
-                lambda d: {**d, "solved_by_me": True, "status": "solved", "flag": flag}
+                lambda d: {**d, "solved": True, "solved_by_me": True, "status": "solved"}
             )
-            # Update legacy repo if exists
-            self.repo.mark_challenge_solved(challenge_id, flag)
             return result
 
         # 6. Failure handling
@@ -228,11 +237,10 @@ class SubmitService:
         return result
 
     def auto_scan_and_submit(self) -> List[SubmitResult]:
-        """Scan workspace and runtime challenges for new flag.txt files."""
-        console.print("[cyan]🔍 Scanning for new flags...[/cyan]")
+        """Scan runtime challenges for new work/flag.txt files."""
+        console.print("[cyan]🔍 Scanning for new flags in runtime...[/cyan]")
         results: List[SubmitResult] = []
 
-        # Scan runtime challenges
         for chall in self.runtime_manager.list_materialized_challenges(self.event_id):
             cid = chall.get("challenge_id")
             if not cid or chall.get("solved_by_me"):
@@ -244,20 +252,6 @@ class SubmitService:
                 if content and self.validate_format(content):
                     res = self.submit(cid, content, strict=True)
                     results.append(res)
-
-        # Fallback to legacy workspace scan if needed
-        for cdir in self.repo.iter_challenge_dirs():
-            meta = self.repo.read_challenge_metadata(cdir) or {}
-            if meta.get("solved_by_me"):
-                continue
-            cid = meta.get("id")
-            for p in [cdir / "solver" / "flag.txt", cdir / "challenge" / "flag.txt", cdir / "flag.txt"]:
-                if p.is_file():
-                    content = p.read_text(encoding="utf-8").strip()
-                    if content and self.validate_format(content) and cid is not None:
-                        res = self.submit(cid, content, strict=True)
-                        results.append(res)
-                        break
 
         return results
 
@@ -284,8 +278,18 @@ class SubmitService:
 
     def _log_failed_flag(self, cid: Any, cname: str, flag: str, reason: str):
         epath = self.runtime_manager.event_path(self.event_id)
-        log_file = epath / ".failed_flags.log" if epath.exists() else self.workspace_dir / ".failed_flags.log"
-        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        with open(log_file, "a", encoding="utf-8") as f:
-            f.write(f"[{now}] Challenge: {cname} (ID: {cid}) | Flag: {flag} | Reason: {reason}\n")
-        self._ensure_secure_file(log_file)
+        log_file = epath / ".failed_flags.jsonl"
+        record = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "challenge_id": str(cid),
+            "challenge_name": cname,
+            "flag_hash": self._hash_flag(cid, flag),
+            "flag_masked": self._mask_flag(flag),
+            "reason": reason,
+        }
+        try:
+            with open(log_file, "a", encoding="utf-8") as f:
+                f.write(json.dumps(record, ensure_ascii=False) + "\n")
+            self._ensure_secure_file(log_file)
+        except Exception:
+            pass

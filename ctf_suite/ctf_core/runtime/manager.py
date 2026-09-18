@@ -195,20 +195,53 @@ class RuntimeManager:
         return cpath
 
     def _create_default_solve_script(self, target: Path, challenge: Challenge):
+        cat = (challenge.category or "misc").lower()
+        tpl_dir = Path(__file__).resolve().parent.parent / "execution" / "templates"
+        tpl_path = tpl_dir / f"solve_{cat}.py"
+        if not tpl_path.is_file() and cat == "crypto":
+            tpl_path = tpl_dir / "solve_crypto.sage"
+
+        host = ""
+        port = ""
+        conn = challenge.connection_info or ""
+        if " " in conn:
+            parts = conn.split()
+            for i, p in enumerate(parts):
+                if p in ["nc", "ncat", "netcat"] and i + 2 < len(parts):
+                    host = parts[i + 1]
+                    port = parts[i + 2]
+                    break
+        elif ":" in conn and not conn.startswith("http"):
+            parts = conn.split(":")
+            host = parts[0]
+            port = parts[1]
+
+        if tpl_path.is_file():
+            content = tpl_path.read_text(encoding="utf-8")
+            header = f"#!/usr/bin/env python3\n# Solver for: {challenge.name} ({challenge.category})\n# Connection: {challenge.connection_info or 'N/A'}\n"
+            if host:
+                header += f'HOST = "{host}"\n'
+            if port:
+                header += f'PORT = {port}\n'
+            header += f'TARGET_URL = "{conn if conn.startswith("http") else ""}"\n\n'
+            if content.startswith("#!/usr/bin/env python3\n"):
+                content = content[len("#!/usr/bin/env python3\n"):]
+            content = header + content
+            target.write_text(content, encoding="utf-8")
+            return
+
         content = f"""#!/usr/bin/env python3
 # Solver for: {challenge.name} ({challenge.category})
 # Connection: {challenge.connection_info or "N/A"}
+HOST = "{host or 'localhost'}"
+PORT = {port or 1337}
+TARGET_URL = "{conn if conn.startswith('http') else ''}"
+
 import sys
 import os
 
 def solve():
     print("[*] Running solver for {challenge.name}...")
-    # Add exploit / solving logic here
-    # Example:
-    # flag = "FLAG{{...}}"
-    # print(f"[+] Found flag: {{flag}}")
-    # with open("flag.txt", "w") as f:
-    #     f.write(flag + "\\n")
 
 if __name__ == "__main__":
     solve()
@@ -251,6 +284,10 @@ if __name__ == "__main__":
                     fcntl.flock(lf.fileno(), fcntl.LOCK_UN)
         except Exception:
             return False
+
+    def write_challenge_state(self, event_id: str, challenge_id: Any, state: Dict[str, Any]) -> bool:
+        """Write entire challenge state replacing previous dictionary."""
+        return self.update_challenge_state(event_id, challenge_id, lambda _: state)
 
     def list_events(self) -> List[str]:
         if not self.base_dir.is_dir():

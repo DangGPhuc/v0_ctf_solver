@@ -2,37 +2,45 @@ import re
 from pathlib import Path
 from typing import Any, Optional
 from rich.console import Console
+
 from ..models import ContainerInfo
 from ..platforms.registry import create_platform, detect_platform_type
-from ..workspace.repo import WorkspaceRepo
+from ..runtime.manager import RuntimeManager
 
 console = Console()
 
 class InstanceService:
     def __init__(
         self,
-        workspace_dir: Path,
         platform_url: str,
         session_cookie: Optional[str] = None,
         api_token: Optional[str] = None,
-        platform_type: Optional[str] = None
+        platform_type: Optional[str] = None,
+        runtime_manager: Optional[RuntimeManager] = None,
+        event_id: Optional[str] = None,
+        platform: Optional[Any] = None,
+        workspace_dir: Optional[Path] = None,  # Kept for backward compatibility
     ):
-        self.workspace_dir = Path(workspace_dir).resolve()
-        self.repo = WorkspaceRepo(self.workspace_dir)
-        p_type = platform_type or detect_platform_type(platform_url, session_cookie)
-        self.platform = create_platform(
-            platform_name=p_type,
-            url=platform_url,
-            session_cookie=session_cookie,
-            api_token=api_token
-        )
+        self.runtime_manager = runtime_manager or RuntimeManager()
+        self.event_id = event_id or "default_event"
+        
+        if platform is not None:
+            self.platform = platform
+        else:
+            p_type = platform_type or detect_platform_type(platform_url, session_cookie)
+            self.platform = create_platform(
+                platform_name=p_type,
+                url=platform_url,
+                session_cookie=session_cookie,
+                api_token=api_token
+            )
 
     def start(self, challenge_id: Any) -> ContainerInfo:
         console.print(f"[bold cyan]🚀 Đang khởi tạo container cho Challenge ID: {challenge_id}...[/bold cyan]")
         info = self.platform.start_instance(challenge_id)
         if info.status == "running":
             console.print(f"[bold green]✔ Container đã hoạt động![/bold green] Entry: [bold yellow]{info.entry}[/bold yellow]")
-            self._sync_container_to_files(challenge_id, info)
+            self._sync_container_to_runtime(challenge_id, info)
         else:
             console.print(f"[bold red]❌ Khởi tạo thất bại:[/bold red] {info.message}")
         return info
@@ -55,13 +63,14 @@ class InstanceService:
             console.print(f"[red]❌ Gia hạn thất bại hoặc đã đạt giới hạn.[/red]")
         return ok
 
-    def _sync_container_to_files(self, challenge_id: Any, info: ContainerInfo):
+    def _sync_container_to_runtime(self, challenge_id: Any, info: ContainerInfo):
         """
-        Tự động parse host:port và cập nhật thẳng vào solve.py và README.md.
+        Cập nhật connection_info và instance_info vào state.json trong runtime challenge
+        và tự động patch HOST:PORT vào work/solve.py nếu có.
         """
-        chall_dir = self.repo.find_challenge_dir(challenge_id)
-        if not chall_dir:
-            console.print(f"[yellow]⚠️ Không tìm thấy thư mục của Challenge ID {challenge_id} để sync file.[/yellow]")
+        cpath = self.runtime_manager.challenge_path(self.event_id, challenge_id)
+        if not cpath.exists():
+            console.print(f"[yellow]⚠️ Thư mục runtime của Challenge ID {challenge_id} chưa được materialize.[/yellow]")
             return
 
         entry = info.entry or ""
@@ -76,36 +85,33 @@ class InstanceService:
             except ValueError:
                 pass
 
-        # 1. Cập nhật solver/solve.py
-        solve_file = chall_dir / "solver" / "solve.py"
+        # 1. Cập nhật work/solve.py nếu có
+        solve_file = cpath / "work" / "solve.py"
         if solve_file.is_file():
             content = solve_file.read_text(encoding="utf-8")
             if host and port:
-                content = re.sub(r'HOST\s*=\s*["\'][^"\']+["\']', f'HOST = "{host}"', content)
-                content = re.sub(r'PORT\s*=\s*[0-9]+', f'PORT = {port}', content)
+                if re.search(r'HOST\s*=\s*["\'][^"\']*["\']', content):
+                    content = re.sub(r'HOST\s*=\s*["\'][^"\']*["\']', f'HOST = "{host}"', content)
+                else:
+                    content = f'HOST = "{host}"\n' + content
+                if re.search(r'PORT\s*=\s*[0-9]+', content):
+                    content = re.sub(r'PORT\s*=\s*[0-9]+', f'PORT = {port}', content)
+                else:
+                    content = f'PORT = {port}\n' + content
             if entry.startswith("http"):
-                content = re.sub(r'TARGET_URL\s*=\s*["\'][^"\']+["\']', f'TARGET_URL = "{entry}"', content)
+                if re.search(r'TARGET_URL\s*=\s*["\'][^"\']*["\']', content):
+                    content = re.sub(r'TARGET_URL\s*=\s*["\'][^"\']*["\']', f'TARGET_URL = "{entry}"', content)
+                else:
+                    content = f'TARGET_URL = "{entry}"\n' + content
             solve_file.write_text(content, encoding="utf-8")
-            console.print(f"[green]✔ Đã tự động cập nhật HOST:PORT vào [bold]{solve_file.relative_to(self.workspace_dir)}[/bold][/green]")
+            console.print(f"[green]✔ Đã tự động cập nhật HOST:PORT vào work/solve.py[/green]")
 
-        # 2. Cập nhật challenge/README.md
-        readme_file = chall_dir / "challenge" / "README.md"
-        if readme_file.is_file():
-            readme_text = readme_file.read_text(encoding="utf-8")
-            conn_block = f"## 🔌 Connection / Target Service\n```bash\nnc {host} {port}\n```" if (host and port) else f"## 🔌 Connection / Target Service\n```bash\n{entry}\n```"
-            if "## 🔌 Connection / Target Service" in readme_text:
-                readme_text = re.sub(
-                    r'## 🔌 Connection / Target Service[\s\S]*?```[\s\S]*?```',
-                    conn_block,
-                    readme_text,
-                    count=1
-                )
-            else:
-                readme_text = f"{conn_block}\n\n{readme_text}"
-            readme_file.write_text(readme_text, encoding="utf-8")
-
-        # 3. Cập nhật metadata.json
-        meta = self.repo.read_challenge_metadata(chall_dir) or {}
-        meta["connection_info"] = entry
-        meta["instance_info"] = info.model_dump()
-        self.repo.write_challenge_metadata(chall_dir, meta)
+        # 2. Cập nhật state.json
+        state = self.runtime_manager.read_challenge_state(self.event_id, challenge_id) or {}
+        state["connection_info"] = {
+            "entry": entry,
+            "host": host,
+            "port": port,
+        }
+        state["instance_info"] = info.model_dump()
+        self.runtime_manager.write_challenge_state(self.event_id, challenge_id, state)

@@ -11,14 +11,17 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
-from ..models import Challenge, AdvisorGuidance, Hypothesis, Action, ExecutionResult
-from ..workspace.repo import WorkspaceRepo
+from ..models import Challenge, AdvisorGuidance, Hypothesis, Action, ExecutionResult, AdvisorResult
 from ..runtime.manager import RuntimeManager
+from ..advisor.browser_bridge import BrowserBridge
+from ..triage.static import StaticTriage
+from ..knowledge.provider import KnowledgeProvider
+from ..knowledge.github_provider import GitHubKnowledgeProvider
 from ..meta.tree import DiscoveryTree, DiscoveryNode
 from ..meta.event_recorder import EventRecorder
 from ..meta.policy import ExplorationPolicy
 from ..meta.simulator import ReplaySimulator, ReplayResult
-from ..meta.knowledge_compiler import KnowledgeCompiler, KnowledgeRetriever
+from ..meta.knowledge_compiler import KnowledgeCompiler
 from ..prompts import (
     PromptCompiler,
     PromptSpec,
@@ -44,34 +47,25 @@ class AdvisorService:
 
     def __init__(
         self,
-        workspace_dir: Path,
+        workspace_dir: Optional[Path] = None,
         reverse_skill_dir: Optional[Path] = None,
         runtime_manager: Optional[RuntimeManager] = None,
         event_id: Optional[str] = None,
+        knowledge_provider: Optional[KnowledgeProvider] = None,
     ):
-        self.workspace_dir = Path(workspace_dir).resolve()
-        self.reverse_skill_dir = (
-            Path(reverse_skill_dir).resolve()
-            if reverse_skill_dir
-            else self.workspace_dir.parent / "reverse-skill"
-        )
+        self.workspace_dir = Path(workspace_dir).resolve() if workspace_dir else Path.cwd()
         self.runtime_manager = runtime_manager or RuntimeManager()
         self.event_id = event_id or "default_event"
-        self.repo = WorkspaceRepo(self.workspace_dir)
         self.policy = ExplorationPolicy.load_active_policy()
         self.kb_compiler = KnowledgeCompiler()
-        self.kb_retriever = KnowledgeRetriever()
+        self.knowledge_provider = knowledge_provider or GitHubKnowledgeProvider(offline=True)
+        self.browser_bridge = BrowserBridge()
 
     def _find_chall_dir(self, challenge_id: Any) -> Path:
-        if self.runtime_manager.is_challenge_materialized(self.event_id, challenge_id):
-            return self.runtime_manager.challenge_path(self.event_id, challenge_id)
-        chall_dir = self.repo.find_challenge_dir(challenge_id)
-        if not chall_dir:
-            cp = self.runtime_manager.challenge_path(self.event_id, challenge_id)
-            if cp.exists():
-                return cp
-            raise ValueError(f"Không tìm thấy thư mục cho Challenge ID: {challenge_id}")
-        return chall_dir
+        cp = self.runtime_manager.challenge_path(self.event_id, challenge_id)
+        if cp.exists():
+            return cp
+        raise ValueError(f"Runtime challenge directory not materialized for ID: {challenge_id}")
 
     def get_advisor_dir(self, challenge_id: Any) -> Path:
         chall_dir = self._find_chall_dir(challenge_id)
@@ -93,11 +87,7 @@ class AdvisorService:
         advisor_dir = chall_dir / ".advisor"
         advisor_dir.mkdir(parents=True, exist_ok=True)
 
-        meta = self.repo.read_challenge_metadata(chall_dir) or {}
-        if not meta:
-            st = self.runtime_manager.read_challenge_state(self.event_id, challenge_id)
-            if st:
-                meta = st
+        meta = self.runtime_manager.read_challenge_state(self.event_id, challenge_id) or {}
         name = meta.get("name", f"Challenge_{challenge_id}")
         category = meta.get("category", "Misc")
 
@@ -287,11 +277,7 @@ class AdvisorService:
         if not (advisor_dir / "state.json").exists():
             self.init_challenge_advisor(challenge_id)
 
-        meta = self.repo.read_challenge_metadata(chall_dir) or {}
-        if not meta:
-            st = self.runtime_manager.read_challenge_state(self.event_id, challenge_id)
-            if st:
-                meta = st
+        meta = self.runtime_manager.read_challenge_state(self.event_id, challenge_id) or {}
         state = json.loads((advisor_dir / "state.json").read_text(encoding="utf-8"))
 
         name = meta.get("name", f"Challenge_{challenge_id}")
@@ -307,11 +293,22 @@ class AdvisorService:
             else "*Không có hint.*"
         )
 
-        # 1. Thu thập Knowledge Cards tương tự (tối đa theo policy)
+        # 1. Thu thập Knowledge Cards tương tự qua KnowledgeProvider
         retrieved_cards = []
         try:
-            max_cards = self.policy.prompt_policy.get("retrieved_cases_limit", 1)
-            retrieved_cards = self.kb_retriever.retrieve_relevant_cards(category=category, max_cards=max_cards)
+            from ..knowledge.models import KnowledgeQuery
+            kq = KnowledgeQuery(category=category, keywords=[name])
+            hits = self.knowledge_provider.search(kq, limit=2)
+            for h in hits:
+                doc = self.knowledge_provider.fetch(h)
+                if doc:
+                    retrieved_cards.append({
+                        "id": doc.id,
+                        "title": doc.title,
+                        "category": doc.category,
+                        "summary": doc.summary,
+                        "technique": doc.technique_steps,
+                    })
         except Exception:
             pass
 
@@ -326,7 +323,7 @@ class AdvisorService:
 
         # 3. Thu thập Focus Artifacts (Solver preview)
         max_lines = self.policy.executor.get("max_raw_log_lines", 40)
-        solver_file = (chall_dir / "work" / "solve.py") if (chall_dir / "work" / "solve.py").exists() else (chall_dir / "solver" / "solve.py")
+        solver_file = chall_dir / "work" / "solve.py"
         solver_snippet = None
         if solver_file.exists():
             content = solver_file.read_text(encoding="utf-8")
@@ -461,20 +458,27 @@ class AdvisorService:
         # Fallback Mechanism
         if not advisor_response:
             console.print("[yellow]🔄 Chuyển sang chế độ Fallback: Copy Prompt vào Clipboard & Mở Firefox...[/yellow]")
-            copied = self._copy_to_clipboard(prompt)
-            try:
-                subprocess.Popen(["firefox", "-new-tab", "https://chatgpt.com/"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                console.print("[bold cyan]✔ Đã mở tab https://chatgpt.com/ trên Firefox![/bold cyan]")
-            except Exception:
-                pass
-            if copied:
-                console.print("[green]✔ Đã copy Prompt 4 tầng vào Clipboard hệ thống! Bạn chỉ cần ấn Ctrl+V trên Firefox.[/green]")
-            advisor_response = (
-                "# Chế Độ Cố Vấn Tạm Thời (Fallback)\n\n"
-                "Prompt phân tích 4 tầng đã được lưu tại `.advisor/latest_prompt.md` và sao chép vào Clipboard.\n"
-                "Sau khi nhận được phản hồi từ ChatGPT Web, hãy lưu vào `.advisor/guidance.md` hoặc dùng `./ctf advisor report`."
+            BrowserBridge.copy_to_clipboard(prompt)
+            BrowserBridge.open_firefox("https://chatgpt.com/")
+            console.print("[green]✔ Đã copy Prompt vào Clipboard hệ thống! Bạn chỉ cần ấn Ctrl+V trên Firefox.[/green]")
+
+            adv_result = AdvisorResult(
+                status="WAITING_FOR_MANUAL_RESPONSE",
+                guidance=None,
+                provider="firefox-fallback",
+                message="Prompt copied to clipboard. Awaiting manual response in .advisor/guidance.md",
             )
-            provider = "firefox-chatgpt-fallback"
+            return {
+                "challenge_id": str(challenge_id),
+                "iteration": state.get("iteration", 0),
+                "oracle_session": oracle_session,
+                "provider": "firefox-fallback",
+                "guidance_file": advisor_dir / "guidance.md",
+                "guidance": None,
+                "active_hypothesis": None,
+                "status": "WAITING_FOR_MANUAL_RESPONSE",
+                "advisor_result": adv_result,
+            }
 
         # Ghi nhận guidance
         guidance_file = advisor_dir / "guidance.md"
@@ -517,6 +521,13 @@ class AdvisorService:
 
         (advisor_dir / "state.json").write_text(json.dumps(state, indent=2, ensure_ascii=False), encoding="utf-8")
 
+        adv_result = AdvisorResult(
+            status="READY",
+            guidance=guidance,
+            provider=provider,
+            message="Guidance received from strategic advisor",
+        )
+
         return {
             "challenge_id": str(challenge_id),
             "iteration": state["iteration"],
@@ -525,7 +536,39 @@ class AdvisorService:
             "guidance_file": guidance_file,
             "guidance": guidance,
             "active_hypothesis": state.get("active_hypothesis"),
+            "status": "READY",
+            "advisor_result": adv_result,
         }
+
+    def import_manual_response(self, challenge_id: Any, response_content: Any) -> AdvisorResult:
+        chall_dir = self._find_chall_dir(challenge_id)
+        advisor_dir = chall_dir / ".advisor"
+        advisor_dir.mkdir(parents=True, exist_ok=True)
+
+        if isinstance(response_content, Path):
+            response_text = response_content.read_text(encoding="utf-8")
+        elif isinstance(response_content, str) and os.path.exists(response_content):
+            response_text = Path(response_content).read_text(encoding="utf-8")
+        else:
+            response_text = str(response_content)
+
+        guidance_file = advisor_dir / "guidance.md"
+        guidance_file.write_text(response_text, encoding="utf-8")
+
+        guidance = self.parse_advisor_response(response_text)
+        state_file = advisor_dir / "state.json"
+        state = json.loads(state_file.read_text(encoding="utf-8")) if state_file.is_file() else {}
+        if guidance.hypotheses:
+            state["active_hypothesis"] = guidance.hypotheses[0].statement
+            state["iteration"] = state.get("iteration", 0) + 1
+            state_file.write_text(json.dumps(state, indent=2, ensure_ascii=False), encoding="utf-8")
+
+        return AdvisorResult(
+            status="READY",
+            guidance=guidance,
+            provider="manual-import",
+            message="Manual guidance imported and parsed successfully",
+        )
 
     @staticmethod
     def parse_advisor_response(text: str) -> AdvisorGuidance:
