@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
-from ctf_core.models import AdvisorGuidance, Hypothesis, Action, ExecutionResult
+from ctf_core.models import AdvisorGuidance, Hypothesis, Action, ExecutionResult, ExecutionAction
 from ctf_core.execution.restricted_executor import RestrictedLocalExecutor
 from ctf_core.execution.unsafe_executor import UnsafeLocalExecutor
 from ctf_core.execution import get_executor
@@ -49,7 +49,7 @@ class TestExecutorSecurity(unittest.TestCase):
             executor = RestrictedLocalExecutor(timeout=10)
             guidance = AdvisorGuidance(
                 assessment="Test assessment",
-                next_actions=[Action(type="command", command_or_task="python3 check_env.py")]
+                execution_plan=[ExecutionAction(kind="run_python_file", path="check_env.py")]
             )
 
             result = executor.execute(self.context, guidance)
@@ -68,13 +68,8 @@ class TestExecutorSecurity(unittest.TestCase):
         executor = RestrictedLocalExecutor(timeout=10)
         guidance = AdvisorGuidance(
             assessment="Test assessment",
-            next_actions=[
-                Action(
-                    type="command",
-                    command_or_task="python3 run_test.py",
-                    expected_evidence="SPECIFIC_PROOF_STRING"
-                )
-            ]
+            execution_plan=[ExecutionAction(kind="run_python_file", path="run_test.py")],
+            requested_evidence=["SPECIFIC_PROOF_STRING"],
         )
 
         result = executor.execute(self.context, guidance)
@@ -90,7 +85,7 @@ class TestExecutorSecurity(unittest.TestCase):
         executor = RestrictedLocalExecutor(timeout=10, flag_format=r"^FLAG\{.+\}$")
         guidance = AdvisorGuidance(
             assessment="Test assessment",
-            next_actions=[Action(type="command", command_or_task="python3 find_flag.py")]
+            execution_plan=[ExecutionAction(kind="run_python_file", path="find_flag.py")]
         )
 
         result = executor.execute(self.context, guidance)
@@ -105,7 +100,7 @@ class TestExecutorSecurity(unittest.TestCase):
         executor = RestrictedLocalExecutor(timeout=1)  # 1 second timeout
         guidance = AdvisorGuidance(
             assessment="Test assessment",
-            next_actions=[Action(type="command", command_or_task="python3 sleep_loop.py")]
+            execution_plan=[ExecutionAction(kind="run_python_file", path="sleep_loop.py", timeout=1)]
         )
 
         result = executor.execute(self.context, guidance)

@@ -100,6 +100,7 @@ class FakeAdvisor(AdvisorService):
         return {
             "challenge_id": str(challenge_id),
             "iteration": self.consult_count,
+            "status": "READY",
             "guidance": guidance,
             "active_hypothesis": "Key is single byte 0x5a",
         }
