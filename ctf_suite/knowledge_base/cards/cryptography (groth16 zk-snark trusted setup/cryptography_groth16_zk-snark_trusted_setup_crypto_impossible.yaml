@@ -1,0 +1,32 @@
+id: cryptography_groth16_zk-snark_trusted_setup_crypto_impossible
+title: crypto_impossible
+category: cryptography (groth16 zk-snark trusted setup
+fingerprint:
+  file_types:
+  - '`vk.bin`, `secret`, `src/lib.rs`'
+  protections: []
+  tags:
+  - cryptography (groth16 zk-snark trusted setup
+signals:
+- 'Target: `vk.bin`, `secret`, `src/lib.rs`'
+primitive: Distilled technique from crypto_impossible
+preconditions: []
+strategy:
+- 'In `secret`, ROT13 decoding revealed the trusted setup ceremony ID and toxic waste
+  $\tau$:'
+- '`CEREMONY_ID = "3c311d9dfb7735e42643f394dc2c10af"`'
+- $\tau = 3894627051107121998319229043008213446770981528672674568925122813412699817$.
+- Using `derive(tau)`, the ceremony secrets $[\alpha, \beta, \gamma, \delta, s_1,
+  s_2]$ are derived.
+- The verifying key `vk.bin` scales $G_1$ points by $s_1$ and $G_2$ points by $s_2$.
+- 'To forge a valid proof $(A, B, C)$ for the unauthorized claim $\text{CLAIM} = 10^9$
+  without knowing the witness:'
+- Set $A = \alpha_{vk} = \alpha \cdot s_1 \cdot G_1$.
+- Set $B = \beta_{vk} = \beta \cdot s_2 \cdot G_2$.
+verification:
+- Check verification logic against recovered constraints
+failure_modes: []
+reusable_snippets: []
+source:
+  challenge_hash: 56fa3ac622ef7e13
+  learned_at: '2026-09-18T20:13:49.466406'

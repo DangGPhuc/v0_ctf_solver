@@ -8,6 +8,7 @@ SubmitVerdict = Literal[
     "already_solved",
     "ratelimited",
     "auth_failed",
+    "invalid_format",
     "error",
 ]
 
@@ -55,3 +56,69 @@ class CTFInfo(BaseModel):
     team_name: Optional[str] = None
     flag_format: Optional[str] = None
     challenges: List[Challenge] = Field(default_factory=list)
+
+# ==============================================================================
+# STRUCTURED ADVISOR & CLOSED-LOOP EXECUTOR MODELS
+# ==============================================================================
+
+class Hypothesis(BaseModel):
+    id: str = "H1"
+    statement: str
+    confidence: float = 0.5
+    rationale: str = ""
+
+class Action(BaseModel):
+    type: str = "command"
+    command_or_task: str
+    expected_evidence: str = ""
+
+class AdvisorGuidance(BaseModel):
+    assessment: str = ""
+    hypotheses: List[Hypothesis] = Field(default_factory=list)
+    next_actions: List[Action] = Field(default_factory=list)
+    requested_evidence: List[str] = Field(default_factory=list)
+    stop_conditions: List[str] = Field(default_factory=list)
+    raw_text: Optional[str] = None
+
+class ExecutionResult(BaseModel):
+    experiment_id: str
+    status: Literal[
+        "CONFIRMED",
+        "REJECTED",
+        "INCONCLUSIVE",
+        "FLAG_FOUND",
+        "ERROR",
+    ]
+    actions: List[str] = Field(default_factory=list)
+    observed: str = ""
+    evidence: List[str] = Field(default_factory=list)
+    flag_candidates: List[str] = Field(default_factory=list)
+    stdout_tail: Optional[str] = None
+    stderr_tail: Optional[str] = None
+
+# ==============================================================================
+# KNOWLEDGE CARD SCHEMA (DISTILLED MEMORY - NO REAL FLAGS/CREDS)
+# ==============================================================================
+
+class KnowledgeCardFingerprint(BaseModel):
+    file_types: List[str] = Field(default_factory=list)
+    protections: List[str] = Field(default_factory=list)
+    tags: List[str] = Field(default_factory=list)
+
+class KnowledgeCardSource(BaseModel):
+    challenge_hash: str = ""
+    learned_at: str = Field(default_factory=lambda: datetime.now().isoformat())
+
+class KnowledgeCard(BaseModel):
+    id: str
+    title: str
+    category: str
+    fingerprint: KnowledgeCardFingerprint = Field(default_factory=KnowledgeCardFingerprint)
+    signals: List[str] = Field(default_factory=list)
+    primitive: str = ""
+    preconditions: List[str] = Field(default_factory=list)
+    strategy: List[str] = Field(default_factory=list)
+    verification: List[str] = Field(default_factory=list)
+    failure_modes: List[str] = Field(default_factory=list)
+    reusable_snippets: List[str] = Field(default_factory=list)
+    source: KnowledgeCardSource = Field(default_factory=KnowledgeCardSource)

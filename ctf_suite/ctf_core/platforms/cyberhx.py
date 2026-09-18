@@ -201,22 +201,17 @@ class CyberHXPlatform(BasePlatform):
                     if new_expires_at:
                         self.token_expires_at = float(new_expires_at)
 
-                    # Đồng bộ lưu lại vào các tệp .env (phân quyền bảo mật 0600)
+                    # Đồng bộ lưu lại vào tệp .env duy nhất (phân quyền bảo mật 0600)
                     tokens_dict = {
                         "API_TOKEN": self.api_token,
                         "REFRESH_TOKEN": self.refresh_token,
                         "TOKEN_EXPIRES_AT": self.token_expires_at
                     }
-                    target_envs = {Path.cwd() / ".env", Path.cwd() / "CTF_Workspace" / ".env"}
-                    found = find_env_file()
-                    if found:
-                        target_envs.add(found)
-                    for env_path in target_envs:
-                        if env_path.exists() or env_path.parent.exists():
-                            try:
-                                save_env_file(env_path, tokens_dict)
-                            except Exception:
-                                pass
+                    canonical_env = find_env_file() or (Path.cwd() / ".env")
+                    try:
+                        save_env_file(canonical_env, tokens_dict)
+                    except Exception:
+                        pass
                     console.print("[bold green]✔ Đã làm mới token thành công! Phiên giải đấu được duy trì an toàn.[/bold green]")
                     return True
                 else:

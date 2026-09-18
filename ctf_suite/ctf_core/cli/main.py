@@ -7,6 +7,10 @@ from rich.table import Table
 from rich.panel import Panel
 
 from ..config import load_config, save_env_file, find_env_file
+from ..models import Challenge
+from ..platforms.registry import create_platform, detect_platform_type
+from ..runtime.manager import RuntimeManager
+from ..meta.knowledge_compiler import KnowledgeCompiler, KnowledgeRetriever
 from ..services.pull_service import PullService
 from ..services.instance_service import InstanceService
 from ..services.submit_service import SubmitService
@@ -27,6 +31,8 @@ chatgpt_app = typer.Typer(help="🤖 Tích hợp ChatGPT Web trên Firefox để
 advisor_app = typer.Typer(help="🧠 Strategic Advisor Multi-Agent Bridge (Anti-IDE/OpenCode ↔ ChatGPT Web via Oracle/PAL)")
 meta_app = typer.Typer(help="🧬 Dream-RSI Meta-Layer: Discovery Trees, Policies, Offline Replay & Declarative Memory")
 prompt_app = typer.Typer(help="📝 Prompt Master Engine: Contract Compiling, Linting & State Capsules")
+cleanup_app = typer.Typer(help="🧹 Quản lý dọn dẹp runtime tạm thời (challenge, event, all)")
+knowledge_app = typer.Typer(help="📚 Quản lý Thẻ Tri Thức (Knowledge Cards & Migrations)")
 
 app.add_typer(instance_app, name="instance")
 app.add_typer(env_app, name="env")
@@ -34,6 +40,8 @@ app.add_typer(chatgpt_app, name="chatgpt")
 app.add_typer(advisor_app, name="advisor")
 app.add_typer(meta_app, name="meta")
 app.add_typer(prompt_app, name="prompt")
+app.add_typer(cleanup_app, name="cleanup")
+app.add_typer(knowledge_app, name="knowledge")
 
 console = Console()
 
@@ -55,6 +63,54 @@ def _resolve_workspace(workspace: Optional[Path]) -> Path:
     if cand.is_dir():
         return cand.resolve()
     return Path.cwd().resolve()
+
+@app.command(name="list")
+def list_challenges_cmd(
+    category: Optional[str] = typer.Option(None, "--category", "-C", help="Lọc theo category"),
+    url: Optional[str] = typer.Option(None, "--url", "-u", help="Platform URL"),
+    cookie: Optional[str] = typer.Option(None, "--cookie", "-c", help="Session cookie"),
+    token: Optional[str] = typer.Option(None, "--token", "-t", help="API token"),
+):
+    """
+    Xem danh sách challenge trực tiếp từ platform (không tải tệp đính kèm hay tạo thư mục).
+    """
+    cfg = load_config()
+    final_url = url or cfg.platform_url
+    if not final_url:
+        console.print("[bold red]❌ Lỗi: Chưa cung cấp URL giải đấu! Dùng -u <URL> hoặc ghi vào .env[/bold red]")
+        raise typer.Exit(code=1)
+    
+    p_type = detect_platform_type(final_url, cookie or cfg.session_cookie)
+    platform = create_platform(
+        platform_name=p_type,
+        url=final_url,
+        session_cookie=cookie or cfg.session_cookie,
+        api_token=token or cfg.api_token
+    )
+    if not platform.authenticate():
+        console.print("[yellow]⚠️ Warning: Không thể xác thực tài khoản (chế độ Guest)...[/yellow]")
+    
+    try:
+        challs = platform.list_challenges()
+    except Exception:
+        challs = platform.fetch_challenges()
+
+    if category:
+        cat_lower = category.lower().strip()
+        challs = [c for c in challs if c.category and c.category.lower() == cat_lower]
+
+    table = Table(title=f"🎯 Challenge List — {final_url}", show_header=True, header_style="bold magenta")
+    table.add_column("ID", style="dim", width=8)
+    table.add_column("Category", style="cyan", width=12)
+    table.add_column("Challenge Name", style="bold", width=30)
+    table.add_column("Points", justify="right", width=8)
+    table.add_column("Solves", justify="right", width=8)
+    table.add_column("Status", justify="center", width=12)
+
+    for c in challs:
+        st = "[bold green]✔ Solved[/bold green]" if c.solved_by_me else "[dim]Unsolved[/dim]"
+        table.add_row(str(c.id), c.category, c.name, str(c.points), str(c.solves_count or 0), st)
+    console.print(table)
 
 @app.command(name="pull")
 def pull(
@@ -149,33 +205,82 @@ def auto_pipeline(
 
 @app.command(name="solve")
 def solve(
+    challenge_id: Optional[str] = typer.Argument(None, help="ID của một bài tập cụ thể cần giải"),
     category: Optional[str] = typer.Option(None, "--category", "-C", help="Danh mục bài tập cần giải (vd: Web, Pwn, Rev, Crypto, Forensics)"),
     workspace: Optional[Path] = typer.Option(None, "--workspace", "-w", help="Thư mục workspace"),
     wait_waves: bool = typer.Option(False, "--wait-waves/--no-wait-waves", help="Tự động chờ wave mới khi giải hết category")
 ):
     """
-    Chạy bộ điều phối giải tự động (Challenge Orchestrator) cho Category hiện tại.
+    Chạy bộ điều phối giải tự động (Challenge Orchestrator) cho 1 bài cụ thể hoặc Category.
     """
     ws_dir = _resolve_workspace(workspace)
+    cfg = load_config(ws_dir)
     orchestrator = ChallengeOrchestrator(
         workspace_dir=ws_dir,
-        category=category
+        category=category,
+        platform_url=cfg.platform_url,
+        session_cookie=cfg.session_cookie,
+        api_token=cfg.api_token,
     )
-    orchestrator.run_tournament_loop(auto_wait_waves=wait_waves)
+    if challenge_id:
+        chall = None
+        if orchestrator.platform:
+            chall = orchestrator.platform.get_challenge(challenge_id)
+        if not chall:
+            chall = Challenge(id=challenge_id, name=f"chall_{challenge_id}", category=category or "Misc")
+        orchestrator.execute_challenge_cycle({
+            "id": str(challenge_id),
+            "name": chall.name,
+            "category": chall.category,
+            "points": chall.points,
+            "challenge": chall,
+        })
+    else:
+        orchestrator.run_tournament_loop(auto_wait_waves=wait_waves)
 
 @app.command(name="status")
 def status(
     workspace: Optional[Path] = typer.Option(None, "--workspace", "-w", help="Đường dẫn thư mục workspace")
 ):
     """
-    Xem cây challenge, điểm số và tiến độ giải trong workspace.
+    Xem trạng thái runtime hiện tại và tiến độ giải trong workspace.
     """
+    rt = RuntimeManager()
+    events = rt.list_events()
+    if events:
+        console.print(f"[bold cyan]⚡ Active CTF Runtime Events:[/bold cyan] {', '.join(events)}")
+        for eid in events:
+            challs = rt.list_materialized_challenges(eid)
+            einfo = rt.get_event_info(eid) or {}
+            title = einfo.get("title", f"Event {eid}")
+            solved = sum(1 for c in challs if c.get("solved_by_me"))
+            total = len(challs)
+            console.print(Panel(
+                f"[bold green]Event: {title}[/bold green] (ID: {eid})\n"
+                f"Materialized challenges: {total} | Solved: {solved}",
+                title=f"[bold yellow]Event {eid}[/bold yellow]",
+                border_style="cyan"
+            ))
+            if challs:
+                table = Table(show_header=True, header_style="bold magenta")
+                table.add_column("ID", width=8)
+                table.add_column("Category", width=12)
+                table.add_column("Name", width=30)
+                table.add_column("Points", justify="right", width=8)
+                table.add_column("Status", justify="center", width=14)
+                for c in challs:
+                    st = "[bold green]✔ Solved[/bold green]" if c.get("solved_by_me") else "[dim]⏳ In Progress[/dim]"
+                    table.add_row(str(c.get("challenge_id")), c.get("category", "Misc"), c.get("name", ""), str(c.get("points", 0)), st)
+                console.print(table)
+        return
+
+    # Fallback to legacy workspace repo
     ws_dir = _resolve_workspace(workspace)
     repo = WorkspaceRepo(ws_dir)
     data = repo.read_challenges()
     if not data:
-        console.print(f"[bold red]❌ Không tìm thấy challenges.json trong: {ws_dir}[/bold red]")
-        raise typer.Exit(code=1)
+        console.print(f"[yellow]ℹ Không có runtime active và không tìm thấy challenges.json trong: {ws_dir}[/yellow]")
+        return
 
     ctf_info = data.get("ctf_info", {})
     challenges = data.get("challenges", [])
@@ -272,6 +377,8 @@ def instance_extend(
 
 @app.command(name="submit")
 def submit(
+    challenge_id_arg: Optional[str] = typer.Argument(None, help="ID bài tập cần nộp flag"),
+    flag_arg: Optional[str] = typer.Argument(None, help="Chuỗi flag cần nộp"),
     challenge_id: Optional[str] = typer.Option(None, "--id", "-i", help="ID bài tập cần nộp flag"),
     flag: Optional[str] = typer.Option(None, "--flag", "-f", help="Chuỗi flag cần nộp"),
     auto: bool = typer.Option(False, "--auto", "-a", help="Quét tự động workspace và nộp flag ngay lập tức"),
@@ -279,7 +386,10 @@ def submit(
 ):
     """
     Nộp flag tức thì ('ctf_submit_right_away'). Cảnh báo can thiệp thủ công nếu lỗi!
+    Hỗ trợ cả: `ctf submit <id> <flag>` và `ctf submit -i <id> -f <flag>`.
     """
+    cid = challenge_id_arg or challenge_id
+    flg = flag_arg or flag
     ws_dir = _resolve_workspace(workspace)
     cfg = load_config(ws_dir)
     if not cfg.platform_url:
@@ -297,10 +407,10 @@ def submit(
     if auto:
         service.auto_scan_and_submit()
     else:
-        if not challenge_id or not flag:
-            console.print("[bold red]❌ Vui lòng cung cấp cả --id <ID> và --flag <FLAG> (hoặc dùng --auto)![/bold red]")
+        if not cid or not flg:
+            console.print("[bold red]❌ Vui lòng cung cấp cả ID và FLAG: `ctf submit <id> <flag>` (hoặc dùng --auto)![/bold red]")
             raise typer.Exit(code=1)
-        service.submit(challenge_id, flag)
+        service.submit(cid, flg)
 
 @chatgpt_app.command(name="prompt")
 def chatgpt_prompt_cmd(
@@ -935,4 +1045,128 @@ def prompt_show_cmd(
     )
     if violations:
         console.print(f"[dim]ℹ Lưu ý: Prompt đã được lọc qua {len(violations)} quy tắc linter.[/dim]")
+
+
+# ==============================================================================
+# CLEANUP CLI COMMANDS
+# ==============================================================================
+
+@cleanup_app.command(name="challenge")
+def cleanup_challenge_cmd(
+    challenge_id: str = typer.Argument(..., help="ID của challenge cần xóa runtime"),
+    event: Optional[str] = typer.Option(None, "--event", "-e", help="Event ID (mặc định lấy event active)"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Chỉ kiểm tra và in ra danh sách, không xóa thật")
+):
+    """Xóa dữ liệu runtime tạm của một challenge cụ thể."""
+    rt = RuntimeManager()
+    events = rt.list_events()
+    eid = event or (events[0] if events else "default_event")
+    cpath = rt.challenge_path(eid, challenge_id)
+    if not cpath.exists():
+        console.print(f"[yellow]⚠️ Không tìm thấy runtime cho Challenge ID '{challenge_id}' trong event '{eid}'[/yellow]")
+        return
+    if dry_run:
+        console.print(f"[cyan][DRY-RUN] Sẽ xóa thư mục: {cpath}[/cyan]")
+        return
+    rt.cleanup_challenge(eid, challenge_id)
+    console.print(f"[bold green]✔ Đã xóa an toàn runtime của challenge: {challenge_id}[/bold green]")
+
+@cleanup_app.command(name="event")
+def cleanup_event_cmd(
+    event_id: Optional[str] = typer.Argument(None, help="Event ID cần xóa (mặc định xóa event active)"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Chỉ kiểm tra và in ra danh sách, không xóa thật")
+):
+    """Xóa toàn bộ dữ liệu runtime của một giải CTF (giữ nguyên Knowledge)."""
+    rt = RuntimeManager()
+    events = [event_id] if event_id else rt.list_events()
+    if not events:
+        console.print("[yellow]ℹ Không có event runtime nào để dọn dẹp.[/yellow]")
+        return
+    for eid in events:
+        epath = rt.event_path(eid)
+        if dry_run:
+            console.print(f"[cyan][DRY-RUN] Sẽ xóa event runtime: {epath}[/cyan]")
+        else:
+            rt.cleanup_event(eid)
+            console.print(f"[bold green]✔ Đã xóa sạch runtime của event: {eid}[/bold green]")
+
+@cleanup_app.command(name="all")
+def cleanup_all_cmd(
+    dry_run: bool = typer.Option(False, "--dry-run", help="Chỉ kiểm tra và in ra danh sách, không xóa thật")
+):
+    """Xóa sạch TOÀN BỘ thư mục .runtime/ (giữ nguyên Knowledge)."""
+    rt = RuntimeManager()
+    cleaned = rt.cleanup_all(dry_run=dry_run)
+    if dry_run:
+        console.print(f"[cyan][DRY-RUN] Sẽ xóa {len(cleaned)} event runtime(s): {[str(p) for p in cleaned]}[/cyan]")
+    else:
+        console.print(f"[bold green]✔ Đã xóa sạch toàn bộ runtime CTF ({len(cleaned)} events). Không có tri thức nào bị ảnh hưởng![/bold green]")
+
+
+# ==============================================================================
+# KNOWLEDGE CLI COMMANDS
+# ==============================================================================
+
+@knowledge_app.command(name="list")
+def knowledge_list_cmd(
+    category: Optional[str] = typer.Option(None, "--category", "-C", help="Lọc theo category")
+):
+    """Xem danh sách các Thẻ Tri Thức (Knowledge Cards) đã tích lũy."""
+    import json
+    compiler = KnowledgeCompiler()
+    index_file = compiler.index_file
+    if not index_file.exists():
+        console.print("[yellow]ℹ Chưa có Thẻ Tri Thức nào được tạo.[/yellow]")
+        return
+    index = json.loads(index_file.read_text(encoding="utf-8"))
+    table = Table(title="📚 Declarative Knowledge Cards", show_header=True, header_style="bold magenta")
+    table.add_column("ID", style="dim", width=16)
+    table.add_column("Category", style="cyan", width=12)
+    table.add_column("Name", style="bold", width=30)
+    table.add_column("Card Path", width=35)
+    table.add_column("Updated At", style="dim", width=22)
+
+    for cid, item in index.items():
+        cat = item.get("category", "")
+        if category and cat.lower() != category.lower().strip():
+            continue
+        table.add_row(str(item.get("id", cid)), cat, item.get("name", ""), item.get("card_path", ""), item.get("updated_at", ""))
+    console.print(table)
+
+@knowledge_app.command(name="search")
+def knowledge_search_cmd(
+    query: str = typer.Argument(..., help="Từ khóa tìm kiếm tri thức"),
+    category: Optional[str] = typer.Option(None, "--category", "-C", help="Giới hạn theo category")
+):
+    """Tìm kiếm Thẻ Tri Thức liên quan."""
+    retriever = KnowledgeRetriever()
+    cards = retriever.retrieve_relevant_cards(category=category or "misc", keywords=[query], max_cards=5)
+    if not cards:
+        console.print(f"[yellow]ℹ Không tìm thấy thẻ tri thức khớp với từ khóa: {query}[/yellow]")
+        return
+    for c in cards:
+        console.print(Panel(c["content"][:600] + "...", title=f"[bold green]{c['name']} ({c['category']})[/bold green]"))
+
+@knowledge_app.command(name="migrate-notes")
+def knowledge_migrate_notes_cmd(
+    file_path: Optional[Path] = typer.Option(None, "--file", "-f", help="Đường dẫn tệp SAVED_NOTES.md")
+):
+    """Chuyển đổi các bài viết cũ từ SAVED_NOTES.md thành các Thẻ Tri Thức chuẩn YAML."""
+    target_file = file_path
+    if not target_file:
+        curr = Path.cwd().resolve()
+        for p in [curr, *curr.parents]:
+            cand = p / "SAVED_NOTES.md"
+            if cand.is_file():
+                target_file = cand
+                break
+    if not target_file or not target_file.is_file():
+        console.print("[bold red]❌ Không tìm thấy tệp SAVED_NOTES.md![/bold red]")
+        raise typer.Exit(code=1)
+
+    console.print(f"[cyan]🔄 Đang tiến hành migrate từ: {target_file}...[/cyan]")
+    compiler = KnowledgeCompiler()
+    count = compiler.migrate_saved_notes(target_file)
+    console.print(f"[bold green]✔ Đã chuyển đổi thành công {count} bài tập thành các Thẻ Tri Thức trong knowledge_base/cards/![/bold green]")
+    console.print("[dim]Tệp SAVED_NOTES.md cũ được giữ lại an toàn làm tài liệu lưu trữ legacy.[/dim]")
 

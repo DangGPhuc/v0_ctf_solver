@@ -1,0 +1,30 @@
+id: pwn_static_x86-64_elf_pwn_file_parser
+title: pwn_File parser
+category: pwn (static x86-64 elf
+fingerprint:
+  file_types: []
+  protections: []
+  tags:
+  - pwn (static x86-64 elf
+signals: []
+primitive: Distilled technique from pwn_File parser
+preconditions: []
+strategy:
+- Binary `fileparser` is a statically linked 64-bit ELF without PIE (`0x400000`),
+  without Stack Canary, Partial RELRO, and NX enabled.
+- '`wrapper.py` receives a base64-encoded file, writes it to `/tmp/*.k`, and executes
+  `./fileparser <path>`.'
+- 'Disassembly of `main`:'
+- '1. Reads 16-byte header from file:'
+- 'Offset `+0x00`: 4-byte Magic (checked against `0x07030301`).'
+- 'Offset `+0x04`: 4-byte `Length` $N$.'
+- 'Offset `+0x08`: 8-byte Checksum.'
+- 2. Reads $N$ bytes into stack buffer `[rbp-0x110]` via `fread(rbp-0x110, 1, Length,
+  fp)`.
+verification:
+- Check verification logic against recovered constraints
+failure_modes: []
+reusable_snippets: []
+source:
+  challenge_hash: 740e5f0ca3f4850b
+  learned_at: '2026-09-18T20:13:49.472960'

@@ -1,0 +1,33 @@
+id: cryptography_crypto_ec_pz
+title: crypto_EC PZ
+category: cryptography
+fingerprint:
+  file_types:
+  - '`chall.sage`, `output.txt`'
+  protections: []
+  tags:
+  - cryptography
+signals:
+- 'Target: `chall.sage`, `output.txt`'
+primitive: Distilled technique from crypto_EC PZ
+preconditions: []
+strategy:
+- 'Given $P = (x_1, y_1)$, $Q = 2P = (x_2, y_2)$, $R = 2Q = (x_3, y_3)$ over $E(\mathbb{F}_p):
+  y^2 = x^3 + ax + b$.'
+- 'Doubling tangent relations yield linear equations in $a \pmod p$:'
+- $2 y_1 (y_1 + y_2) - 3 x_1^2 (x_1 - x_2) \equiv (y_1^2 - y_2^2) - (x_1^3 - x_2^3)
+  \pmod p$.
+- Computing GCD of differences between $(P, Q)$ and $(Q, R)$ recovers the 256-bit
+  prime $p$.
+- Recover $a$ and $b$ modulo $p$.
+- Using PARI/GP `ellcard` with 256MB stack, computed $\#E$.
+- Inverted $k = \text{next\_prime}(0x133713371337)$ modulo $\#E$ and computed $F =
+  d \cdot C$, extracting $x$-coordinate to recover flag.
+- 'Status**: Solved & Submitted ✔'
+verification:
+- Check verification logic against recovered constraints
+failure_modes: []
+reusable_snippets: []
+source:
+  challenge_hash: b0a7786e392a75e4
+  learned_at: '2026-09-18T20:13:49.456952'

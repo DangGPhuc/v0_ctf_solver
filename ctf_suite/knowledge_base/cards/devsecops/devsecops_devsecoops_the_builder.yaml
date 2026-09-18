@@ -1,0 +1,31 @@
+id: devsecops_devsecoops_the_builder
+title: devsecoops_The Builder
+category: devsecops
+fingerprint:
+  file_types: []
+  protections: []
+  tags:
+  - devsecops
+signals: []
+primitive: Distilled technique from devsecoops_The Builder
+preconditions: []
+strategy:
+- The Builder is a SaaS building containerized static websites.
+- 'The build Dockerfile uses multi-stage builds:'
+- 'Stage `theme`: `RUN --mount=type=secret,id=flag cp /run/secrets/flag /flag.txt
+  && printf ''...'' > /theme.css`'
+- 'Stage `content0`: `FROM page0 AS content0`'
+- 'Stage `site`: `FROM cgr.dev/chainguard/nginx:latest AS site; COPY --from=theme
+  /theme.css /usr/share/nginx/html/theme.css; COPY --from=content0 /page /usr/share/nginx/html/<location>`'
+- '`page0` is supplied as a named build context pointing to the internal registry:
+  `127.0.0.1:5000/pages:<hash>`.'
+- The registry was exposed externally without authentication.
+- 'While the backend creates and pushes `pages:<hash>` on each build, we pre-uploaded
+  an image containing an `ONBUILD` trigger: `ONBUILD COPY --from=theme /flag.txt /page`.'
+verification:
+- Check verification logic against recovered constraints
+failure_modes: []
+reusable_snippets: []
+source:
+  challenge_hash: 3141b5c664b2f893
+  learned_at: '2026-09-18T20:13:49.459480'

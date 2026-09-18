@@ -1,0 +1,30 @@
+id: misc_misc_hardware_accelerated_flag_checker_2
+title: misc_Hardware accelerated flag checker 2
+category: misc
+fingerprint:
+  file_types: []
+  protections: []
+  tags:
+  - misc
+signals: []
+primitive: Distilled technique from misc_Hardware accelerated flag checker 2
+preconditions: []
+strategy:
+- GDSII (`flag_checker.gds`) and Magic (`flag_checker.mag`) containing a physical
+  tapeout of an FSM flag checker in SkyWater 130nm standard cell ASIC.
+- Extracted pin geometries and interconnect across 154 functional cells (5 DFFs `_243_`..`_247_`,
+  141 logic gates, 8 input buffers, 1 output buffer `output9`).
+- Signal netlist closure was achieved by unioning all top-level metal routing shapes
+  touching the internal `li1` pin geometry strips of each standard cell.
+- 'Corrected complex gate evaluation models (such as `o21bai: Y = !((A1 | A2) & !B1_N)`).'
+- Executed BFS over the 32-state FSM starting from state `0` with `reset_n = 1`. Found
+  the unique 31-character progression leading to the terminal state `(1, 1, 1, 1,
+  1)` asserting `found_flag = 1`.
+- 'Status**: Solved & Submitted ✔'
+verification:
+- Check verification logic against recovered constraints
+failure_modes: []
+reusable_snippets: []
+source:
+  challenge_hash: 1e1cb150894b7588
+  learned_at: '2026-09-18T20:13:49.481539'

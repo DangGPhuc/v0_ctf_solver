@@ -1,5 +1,5 @@
 """CTF Platforms Package."""
-from .base import BasePlatform
+from .base import BasePlatform, PlatformAdapter
 from .registry import create_platform, detect_platform_type, register_platform
 from .ctfd import CTFdPlatform
 from .gzctf import GZCTFPlatform

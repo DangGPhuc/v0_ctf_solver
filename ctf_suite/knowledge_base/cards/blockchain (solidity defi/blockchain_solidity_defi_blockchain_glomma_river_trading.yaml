@@ -1,0 +1,30 @@
+id: blockchain_solidity_defi_blockchain_glomma_river_trading
+title: blockchain_Glomma River Trading
+category: blockchain (solidity defi
+fingerprint:
+  file_types: []
+  protections: []
+  tags:
+  - blockchain (solidity defi
+signals: []
+primitive: Distilled technique from blockchain_Glomma River Trading
+preconditions: []
+strategy:
+- '`HyperCore` implements a simplified perpetual exchange with an on-chain AMM spot
+  market serving as its price oracle:'
+- $$\text{oraclePx}(1) = \frac{\text{spotQuoteReserve} \times 10^6}{\text{spotBaseReserve}}$$
+- 'Initial parameters:'
+- 'Collateral: $10,000 \times 10^6$ ($10,000$ USD)'
+- 'Vault Equity: $5,000,000 \times 10^6$ ($5,000,000$ USD)'
+- 'Spot Base Reserve: $1,000 \times 10^6$, Spot Quote Reserve: $1,000 \times 10^6$
+  ($\text{oraclePx} = 1.00$).'
+- 'Target condition in `Setup.sol`:'
+- $$\text{vaultEquity} \le 100,000 \times 10^6 \quad \land \quad \text{collateral}
+  \ge 4,900,000 \times 10^6$$
+verification:
+- Check verification logic against recovered constraints
+failure_modes: []
+reusable_snippets: []
+source:
+  challenge_hash: 5f48c67cbe0da01c
+  learned_at: '2026-09-18T20:13:49.480748'

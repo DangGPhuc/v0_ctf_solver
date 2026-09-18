@@ -1,9 +1,15 @@
 from abc import ABC, abstractmethod
+from pathlib import Path
 from typing import Any, List, Optional
 import httpx
 from ..models import CTFInfo, Challenge, ContainerInfo, SubmitResult
 
 class BasePlatform(ABC):
+    """
+    Standard thin PlatformAdapter abstraction across CTFd, CyberHX, GZCTF, rCTF, noCTF.
+    Responsible solely for translating platform-specific APIs into standardized models.
+    Does NOT manage filesystem workspaces, solvers, or credentials persistence.
+    """
     def __init__(
         self,
         url: str,
@@ -37,36 +43,72 @@ class BasePlatform(ABC):
 
     @abstractmethod
     def authenticate(self) -> bool:
-        """Kiểm tra tính hợp lệ của cookie hoặc token."""
+        """Verify session cookie or API token validity."""
         pass
 
     @abstractmethod
     def fetch_challenges(self) -> List[Challenge]:
-        """Lấy toàn bộ danh sách bài tập từ platform."""
+        """Fetch all challenges from platform."""
         pass
+
+    def list_challenges(self) -> List[Challenge]:
+        """Standard method alias for fetch_challenges."""
+        return self.fetch_challenges()
 
     @abstractmethod
     def fetch_ctf_info(self) -> CTFInfo:
-        """Lấy thông tin tổng quan của giải."""
+        """Fetch competition/event summary metadata."""
         pass
+
+    def get_event_info(self) -> CTFInfo:
+        """Standard method alias for fetch_ctf_info."""
+        return self.fetch_ctf_info()
+
+    def get_challenge(self, challenge_id: Any) -> Optional[Challenge]:
+        """Retrieve single challenge metadata by ID."""
+        cid_str = str(challenge_id).strip().lower()
+        for ch in self.list_challenges():
+            if str(ch.id).strip().lower() == cid_str or ch.name.strip().lower() == cid_str:
+                return ch
+        return None
+
+    def download_attachments(self, challenge_id: Any, destination: Path) -> List[Path]:
+        """Download attachments for a single challenge using origin-isolated downloader."""
+        from ..downloaders.manager import DownloadManager
+        chall = self.get_challenge(challenge_id)
+        if not chall or not chall.files:
+            return []
+        
+        dm = DownloadManager(
+            platform_url=self.url,
+            session_cookie=self.session_cookie,
+            api_token=self.api_token,
+            timeout=self.timeout
+        )
+        try:
+            return dm.download_attachments(chall.files, destination)
+        finally:
+            dm.close()
 
     @abstractmethod
     def submit_flag(self, challenge_id: Any, flag: str) -> SubmitResult:
-        """Nộp flag lên platform."""
+        """Submit a flag candidate to the platform."""
         pass
 
     def start_instance(self, challenge_id: Any) -> ContainerInfo:
-        """Khởi chạy dynamic container (nếu platform hỗ trợ)."""
-        return ContainerInfo(status="error", message="Platform không hỗ trợ dynamic container")
+        """Start dynamic container (if platform supports it)."""
+        return ContainerInfo(status="error", message="Platform does not support dynamic containers")
 
     def stop_instance(self, challenge_id: Any) -> bool:
-        """Dừng dynamic container."""
+        """Stop dynamic container."""
         return False
 
     def extend_instance(self, challenge_id: Any) -> bool:
-        """Gia hạn thời gian chạy container."""
+        """Extend running container duration."""
         return False
 
     def get_instance_status(self, challenge_id: Any) -> ContainerInfo:
-        """Lấy trạng thái container hiện thời."""
+        """Get current container status."""
         return ContainerInfo(status="stopped")
+
+PlatformAdapter = BasePlatform

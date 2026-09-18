@@ -1,0 +1,32 @@
+id: reverse_engineering_arm_cortex-m_rev_harald_bl_tann
+title: rev_Harald Blåtann
+category: reverse engineering (arm cortex-m
+fingerprint:
+  file_types: []
+  protections: []
+  tags:
+  - reverse engineering (arm cortex-m
+signals: []
+primitive: Distilled technique from rev_Harald Blåtann
+preconditions: []
+strategy:
+- Challenge file `harald-blatann.hex` is an Intel HEX file containing ARM Cortex-M33
+  firmware running Zephyr OS v4.4.0 with Nordic nRF Connect SDK Bluetooth Low Energy
+  (BLE) peripheral stack.
+- Converted Intel HEX to binary loaded at base address `0x01000000`.
+- 'GATT Service inspection:'
+- Located custom 128-bit Primary Service UUID `12345678-1234-5678-1234-56789abcdef0`
+  with 3 characteristics (`...def1`, `...def2`, `...def3`).
+- Characteristic 3 (`write` callback `0x101fc6e`) accepts candidate flag writes up
+  to 74 bytes.
+- 'Verification function at `0x1011b14` receives candidate input:'
+- Invokes `0x101e188` (`psa_cipher_decrypt`).
+- 'Parameters: Key handle from `0x210029f8`, Algorithm `0x04404000` (`PSA_ALG_CBC_NO_PADDING`),
+  Ciphertext at `0x01028103` (96 bytes).'
+verification:
+- Check verification logic against recovered constraints
+failure_modes: []
+reusable_snippets: []
+source:
+  challenge_hash: 520dd76f0e3a81e0
+  learned_at: '2026-09-18T20:13:49.473721'

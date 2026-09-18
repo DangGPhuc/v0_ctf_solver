@@ -1,3 +1,4 @@
+import os
 import re
 import unicodedata
 from pathlib import Path
@@ -74,18 +75,6 @@ class WorkspaceBuilder:
                         except Exception:
                             import shutil
                             shutil.copy2(src_file, dest)
-
-        # 6. Đồng bộ sang reverse-skill/work/<category>/<name>
-        rev_skill_root = workspace_root.parent / "reverse-skill" / "work"
-        if rev_skill_root.is_dir():
-            rev_target = rev_skill_root / cat_clean.lower() / name_clean
-            try:
-                rev_target.parent.mkdir(parents=True, exist_ok=True)
-                if not rev_target.exists() and not rev_target.is_symlink():
-                    rev_target.symlink_to(chall_dir, target_is_directory=True)
-            except Exception:
-                pass
-
         return chall_dir
 
     @staticmethod

@@ -1,0 +1,31 @@
+id: misc_misc_sleepy_cpu
+title: misc_Sleepy CPU
+category: misc
+fingerprint:
+  file_types:
+  - '`sleepy_cpu.jls`, `zephyrapp/src/main.c`'
+  protections: []
+  tags:
+  - misc
+signals:
+- 'Target: `sleepy_cpu.jls`, `zephyrapp/src/main.c`'
+primitive: Distilled technique from misc_Sleepy CPU
+preconditions: []
+strategy:
+- 'Firmware executes a loop over each character of `flag`: runs 100,000 NOPs (active
+  power ~5-7 mA) then calls `k_sleep(K_MSEC(*c))` (low power ~0.9 mA).'
+- Loaded `sleepy_cpu.jls` current channel with `pyjls`.
+- Smoothed signal with a 50-sample moving average and detected low-power sleep intervals
+  between active bursts.
+- 'Converted sleep durations (in milliseconds) directly to ASCII characters:'
+- $[78, 78, 83, 123, 112, 111, 119, 51, 114, 95, \dots] \to \text{NNS\{pow3r_4n4lys15_c4n_rev3al_what_th3_cpu_i5_w0rk1ng_on\}}$.
+- 'Status**: Solved & Submitted ✔'
+- '## Solved Challenges Summary (51 Solved)'
+- 1. `blockchain_eu261` (79 pts) -> `FLAG{...}`
+verification:
+- Check verification logic against recovered constraints
+failure_modes: []
+reusable_snippets: []
+source:
+  challenge_hash: 8a124fa7500213dc
+  learned_at: '2026-09-18T20:13:49.458600'

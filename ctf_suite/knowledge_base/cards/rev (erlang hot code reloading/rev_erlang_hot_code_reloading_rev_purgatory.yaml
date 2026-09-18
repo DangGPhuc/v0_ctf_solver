@@ -1,0 +1,31 @@
+id: rev_erlang_hot_code_reloading_rev_purgatory
+title: rev_purgatory
+category: rev (erlang hot code reloading
+fingerprint:
+  file_types: []
+  protections: []
+  tags:
+  - rev (erlang hot code reloading
+signals: []
+primitive: Distilled technique from rev_purgatory
+preconditions: []
+strategy:
+- 'Challenge distributed as Docker environment running Erlang 28 (`erlang:28-alpine`)
+  with `purgatory_runner.erl` and two BEAM releases: `releases/old.beam` and `releases/new.beam`.'
+- 'The runner sequence:'
+- 1. Loads `old.beam` (`purgatory`).
+- 2. Spawns `Worker = purgatory:boot()`, which enters an infinite loop `loop/0` in
+  `old.beam`.
+- 3. Loads `new.beam` (`purgatory`), hot-patching the module table.
+- 4. Prompts the user for passphrase, sends `{check, self(), Input}` to `Worker`,
+  and prints `FLAG` on `{verdict, true}`.
+- 'BEAM bytecode disassembly (`beam_disasm:file/1`):'
+- '`Worker`''s loop executes `validate/1` via local intra-module call `{call, 1, ...}`,
+  which stays inside `old.beam`.'
+verification:
+- Check verification logic against recovered constraints
+failure_modes: []
+reusable_snippets: []
+source:
+  challenge_hash: 951302ce71f5e970
+  learned_at: '2026-09-18T20:13:49.472129'

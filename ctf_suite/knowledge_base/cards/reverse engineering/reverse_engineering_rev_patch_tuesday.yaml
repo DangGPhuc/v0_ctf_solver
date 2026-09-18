@@ -1,0 +1,27 @@
+id: reverse_engineering_rev_patch_tuesday
+title: rev_Patch Tuesday
+category: reverse engineering
+fingerprint:
+  file_types:
+  - '`free-flag.exe` (PE64)'
+  protections: []
+  tags:
+  - reverse engineering
+signals:
+- 'Target: `free-flag.exe` (PE64)'
+primitive: Distilled technique from rev_Patch Tuesday
+preconditions: []
+strategy:
+- Encrypted buffer at `.data:0x140003000` (length 0x4c).
+- 'Key: `0x5A`.'
+- 'Decrypt logic:'
+- 'Status**: Solved & Submitted ✔'
+verification:
+- Check verification logic against recovered constraints
+failure_modes: []
+reusable_snippets:
+- "    data = bytes.fromhex(\"141409216b05326a2a6905236a2f052a6e6d3932693e056d3269056a2a396a3e69053e2f286b343d05282f346d6b376905303420056b6f05372f39320538696d6d6928056d326e3405302027\"\
+  )\n    print(bytes(b ^ 0x5a for b in data).decode())"
+source:
+  challenge_hash: b36a2596c3195472
+  learned_at: '2026-09-18T20:13:49.454986'

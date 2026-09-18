@@ -316,16 +316,8 @@ Chúng tôi đã tiến hành khai thác và giải mã nhưng đã thất bại
         dest_work = self.reverse_skill_dir / "work" / cat / safe_name
         dest_work.mkdir(parents=True, exist_ok=True)
 
-        # Ghi prompt vào reverse-skill
+        # Ghi prompt vào reverse-skill (nếu có yêu cầu đồng bộ prompt)
         (dest_work / prompt_name).write_text(prompt, encoding="utf-8")
-
-        # Copy các attachments sang
-        att_dir = chall_dir / "challenge"
-        if att_dir.is_dir():
-            for item in att_dir.iterdir():
-                if item.is_file() and item.name not in ["metadata.json"]:
-                    shutil.copy2(item, dest_work / item.name)
-
         return dest_work
 
     def send_to_firefox_chatgpt(self, prompt_text: str) -> bool:

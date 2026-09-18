@@ -1,0 +1,20 @@
+id: misc_misc_the_temple
+title: misc_The Temple
+category: misc
+fingerprint:
+  file_types: []
+  protections: []
+  tags:
+  - misc
+signals: []
+primitive: Distilled technique from misc_The Temple
+preconditions: []
+strategy:
+- Reverse engineering / static triage
+verification:
+- Check verification logic against recovered constraints
+failure_modes: []
+reusable_snippets: []
+source:
+  challenge_hash: bf2ad7f5241944bf
+  learned_at: '2026-09-18T20:13:49.486404'

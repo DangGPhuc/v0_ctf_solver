@@ -11,8 +11,9 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
-from ..models import Challenge
+from ..models import Challenge, AdvisorGuidance, Hypothesis, Action, ExecutionResult
 from ..workspace.repo import WorkspaceRepo
+from ..runtime.manager import RuntimeManager
 from ..meta.tree import DiscoveryTree, DiscoveryNode
 from ..meta.event_recorder import EventRecorder
 from ..meta.policy import ExplorationPolicy
@@ -41,21 +42,34 @@ class AdvisorService:
       và Declarative Technique Cards.
     """
 
-    def __init__(self, workspace_dir: Path, reverse_skill_dir: Optional[Path] = None):
+    def __init__(
+        self,
+        workspace_dir: Path,
+        reverse_skill_dir: Optional[Path] = None,
+        runtime_manager: Optional[RuntimeManager] = None,
+        event_id: Optional[str] = None,
+    ):
         self.workspace_dir = Path(workspace_dir).resolve()
         self.reverse_skill_dir = (
             Path(reverse_skill_dir).resolve()
             if reverse_skill_dir
             else self.workspace_dir.parent / "reverse-skill"
         )
+        self.runtime_manager = runtime_manager or RuntimeManager()
+        self.event_id = event_id or "default_event"
         self.repo = WorkspaceRepo(self.workspace_dir)
         self.policy = ExplorationPolicy.load_active_policy()
         self.kb_compiler = KnowledgeCompiler()
         self.kb_retriever = KnowledgeRetriever()
 
     def _find_chall_dir(self, challenge_id: Any) -> Path:
+        if self.runtime_manager.is_challenge_materialized(self.event_id, challenge_id):
+            return self.runtime_manager.challenge_path(self.event_id, challenge_id)
         chall_dir = self.repo.find_challenge_dir(challenge_id)
         if not chall_dir:
+            cp = self.runtime_manager.challenge_path(self.event_id, challenge_id)
+            if cp.exists():
+                return cp
             raise ValueError(f"Không tìm thấy thư mục cho Challenge ID: {challenge_id}")
         return chall_dir
 
@@ -80,6 +94,10 @@ class AdvisorService:
         advisor_dir.mkdir(parents=True, exist_ok=True)
 
         meta = self.repo.read_challenge_metadata(chall_dir) or {}
+        if not meta:
+            st = self.runtime_manager.read_challenge_state(self.event_id, challenge_id)
+            if st:
+                meta = st
         name = meta.get("name", f"Challenge_{challenge_id}")
         category = meta.get("category", "Misc")
 
@@ -177,7 +195,7 @@ class AdvisorService:
         """Thực hiện trích xuất tĩnh cơ bản để xây dựng L1 Context."""
         name = meta.get("name", "Chall")
         category = meta.get("category", "Misc")
-        attachments_dir = chall_dir / "challenge"
+        attachments_dir = (chall_dir / "input") if (chall_dir / "input").is_dir() else (chall_dir / "challenge")
 
         findings = [
             f"# Confirmed Findings & Evidence: {name} ({category})\n",
@@ -270,6 +288,10 @@ class AdvisorService:
             self.init_challenge_advisor(challenge_id)
 
         meta = self.repo.read_challenge_metadata(chall_dir) or {}
+        if not meta:
+            st = self.runtime_manager.read_challenge_state(self.event_id, challenge_id)
+            if st:
+                meta = st
         state = json.loads((advisor_dir / "state.json").read_text(encoding="utf-8"))
 
         name = meta.get("name", f"Challenge_{challenge_id}")
@@ -304,7 +326,7 @@ class AdvisorService:
 
         # 3. Thu thập Focus Artifacts (Solver preview)
         max_lines = self.policy.executor.get("max_raw_log_lines", 40)
-        solver_file = chall_dir / "solver" / "solve.py"
+        solver_file = (chall_dir / "work" / "solve.py") if (chall_dir / "work" / "solve.py").exists() else (chall_dir / "solver" / "solve.py")
         solver_snippet = None
         if solver_file.exists():
             content = solver_file.read_text(encoding="utf-8")
@@ -472,16 +494,15 @@ class AdvisorService:
         )
         state["last_node_id"] = consult_node.node_id
 
-        # Phân tích sơ bộ để cập nhật active hypothesis nếu tìm thấy
-        hypo_match = re.search(r"(?:H1|Hypothesis 1)[:\s]+([^\n]+)", advisor_response, re.IGNORECASE)
-        if hypo_match:
-            state["active_hypothesis"] = hypo_match.group(1).strip()
-            # Tạo nút hypothesis trên cây
+        # Phân tích có cấu trúc thành AdvisorGuidance
+        guidance = self.parse_advisor_response(advisor_response)
+        if guidance.hypotheses:
+            state["active_hypothesis"] = guidance.hypotheses[0].statement
             hypo_node = recorder.record_event(
                 event_type="hypothesis",
                 actor="advisor",
                 parent_id=consult_node.node_id,
-                node_name=f"H1: {state['active_hypothesis'][:35]}",
+                node_name=f"{guidance.hypotheses[0].id}: {state['active_hypothesis'][:35]}",
                 payload={"hypothesis": state["active_hypothesis"]},
                 status="active",
             )
@@ -502,8 +523,70 @@ class AdvisorService:
             "oracle_session": new_session,
             "provider": provider,
             "guidance_file": guidance_file,
+            "guidance": guidance,
             "active_hypothesis": state.get("active_hypothesis"),
         }
+
+    @staticmethod
+    def parse_advisor_response(text: str) -> AdvisorGuidance:
+        """Parse advisor markdown/text output into structured AdvisorGuidance."""
+        if not text:
+            return AdvisorGuidance(raw_text="")
+        
+        # 1. Try to extract JSON codeblock
+        json_match = re.search(r"```(?:json)?\s*(\{[\s\S]*?\})\s*```", text)
+        if json_match:
+            try:
+                data = json.loads(json_match.group(1))
+                if isinstance(data, dict):
+                    data["raw_text"] = text
+                    return AdvisorGuidance.model_validate(data)
+            except Exception:
+                pass
+
+        # 2. Heuristic parsing
+        assessment = ""
+        ass_m = re.search(r"(?i)(?:assessment|root cause|phân tích)[:\s]+([^\n]+)", text)
+        if ass_m:
+            assessment = ass_m.group(1).strip()
+        else:
+            first_lines = [l.strip() for l in text.splitlines() if l.strip() and not l.startswith("#")]
+            assessment = first_lines[0] if first_lines else "Initial assessment"
+
+        hypotheses: List[Hypothesis] = []
+        hypo_matches = re.findall(r"(?i)(?:H\d+|Hypothesis\s*\d+)[:\s]+([^\n]+)", text)
+        for idx, h_text in enumerate(hypo_matches, 1):
+            hypotheses.append(Hypothesis(id=f"H{idx}", statement=h_text.strip()))
+        if not hypotheses:
+            hypotheses.append(Hypothesis(id="H1", statement="Inspect binary and test exploit payload"))
+
+        next_actions: List[Action] = []
+        actions_matches = re.findall(r"(?i)(?:Action\s*\d*|Step\s*\d*|\d+\.)[:\s]+([^\n]+)", text)
+        for act_text in actions_matches:
+            act_s = act_text.strip()
+            if len(act_s) > 5 and not any(kw in act_s.lower() for kw in ["hypothesis", "assessment"]):
+                next_actions.append(Action(type="command", command_or_task=act_s))
+        if not next_actions:
+            next_actions.append(Action(type="command", command_or_task="python3 solve.py"))
+
+        requested_evidence: List[str] = []
+        ev_m = re.findall(r"(?i)(?:evidence|proof)[:\s]+([^\n]+)", text)
+        for ev in ev_m:
+            requested_evidence.append(ev.strip())
+
+        stop_conditions: List[str] = []
+        stop_m = re.findall(r"(?i)(?:stop condition|dừng khi)[:\s]+([^\n]+)", text)
+        for sc in stop_m:
+            stop_conditions.append(sc.strip())
+
+        return AdvisorGuidance(
+            assessment=assessment,
+            hypotheses=hypotheses,
+            next_actions=next_actions,
+            requested_evidence=requested_evidence,
+            stop_conditions=stop_conditions,
+            raw_text=text,
+        )
 
     def _build_oracle_command(self, prompt: str, oracle_session: Optional[str] = None) -> Optional[List[str]]:
         oracle_bin = shutil.which("oracle")
@@ -535,19 +618,31 @@ class AdvisorService:
     def report_execution(
         self,
         challenge_id: Any,
-        experiment_id: str,
-        actions: str,
-        observed: str,
-        status: str,  # CONFIRMED, REJECTED, INCONCLUSIVE
+        experiment_id_or_result: Any,
+        actions: Optional[str] = None,
+        observed: Optional[str] = None,
+        status: Optional[str] = None,
         diff: Optional[str] = None,
         evidence: Optional[str] = None,
         open_questions: Optional[str] = None,
-        auto_consult: bool = True,
+        auto_consult: bool = False,
     ) -> Dict[str, Any]:
         """
         Đóng gói báo cáo thực nghiệm của Executor, kiểm tra Hypothesis Budget,
         đồng bộ vào DiscoveryTree (DAG), và tự động gửi --followup vào Oracle.
         """
+        if isinstance(experiment_id_or_result, ExecutionResult):
+            experiment_id = experiment_id_or_result.experiment_id
+            actions = actions or ("\n".join(experiment_id_or_result.actions) if experiment_id_or_result.actions else "Ran solver")
+            observed = observed or experiment_id_or_result.observed
+            status = status or experiment_id_or_result.status
+            evidence = evidence or ("\n".join(experiment_id_or_result.evidence) if experiment_id_or_result.evidence else "")
+            diff = diff or (experiment_id_or_result.stderr_tail if experiment_id_or_result.status in ["REJECTED", "ERROR"] else None)
+        else:
+            experiment_id = str(experiment_id_or_result)
+            actions = actions or ""
+            observed = observed or ""
+            status = status or "INCONCLUSIVE"
         chall_dir = self._find_chall_dir(challenge_id)
         advisor_dir = chall_dir / ".advisor"
         state_file = advisor_dir / "state.json"
@@ -788,7 +883,7 @@ class AdvisorService:
         recorder = EventRecorder(advisor_dir)
 
         solver_code = None
-        solver_path = chall_dir / "solver" / "solve.py"
+        solver_path = (chall_dir / "work" / "solve.py") if (chall_dir / "work" / "solve.py").is_file() else (chall_dir / "solver" / "solve.py")
         if solver_path.is_file():
             solver_code = solver_path.read_text(encoding="utf-8")
 

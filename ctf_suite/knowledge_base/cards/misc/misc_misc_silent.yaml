@@ -1,0 +1,36 @@
+id: misc_misc_silent
+title: misc_Silent
+category: misc
+fingerprint:
+  file_types: []
+  protections: []
+  tags:
+  - misc
+signals: []
+primitive: Distilled technique from misc_Silent
+preconditions: []
+strategy:
+- Python 3.14 sandbox with `eval(data, {"__builtins__":{}})`.
+- 'Enforced AST `ast.List` with constraints: each element length $\le 13$ and characters
+  strictly limited to `wl = "),dw.r_[silent]g=c:f("` (`(),.:=[]_cdefgilnrstw`).'
+- No digits (`0-9`), no quotes, no operators (`+`, `-`, `*`, `/`).
+- 'Exploit implementation:'
+- '1. Synthesized numbers via dynamic list size increments: `e:=[d]`, `_:=e.insert`,
+  `_(n,d)` repeated, `e.__len__()`.'
+- 2. Reconstructed `<class 'object'>` via `().__init__.__new__.__self__`.
+- 3. Retrieved slot wrapper `__getattribute__` from `object.__dict__` using `().__dir__()`
+  index 22 in Python 3.14.
+- 4. Recovered `<class 'type'>`, `<class 'list'>`, and `object.__subclasses__()`.
+verification:
+- Check verification logic against recovered constraints
+failure_modes: []
+reusable_snippets:
+- "     FROM debian:trixie-slim AS theme\n     RUN --mount=type=secret,id=flag \\\n\
+  \         cp /run/secrets/flag /flag.txt \\\n      && printf '%s' 'body{font:16px/1.6\
+  \ system-ui;margin:3rem auto;max-width:44rem;padding:0 1rem}' \\\n           > /theme.css\n\
+  \n     FROM page0 AS content0\n     ...\n     FROM cgr.dev/chainguard/nginx:latest\
+  \ AS site\n     COPY --from=theme /theme.css /usr/share/nginx/html/theme.css\n \
+  \    COPY --from=content0 /page /usr/share/nginx/html/<location>"
+source:
+  challenge_hash: d33511d1005a25f6
+  learned_at: '2026-09-18T20:13:49.483500'

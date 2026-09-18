@@ -1,0 +1,32 @@
+id: pwn_custom_assembly_vm_pwn_coins
+title: pwn_coins
+category: pwn (custom assembly vm
+fingerprint:
+  file_types: []
+  protections: []
+  tags:
+  - pwn (custom assembly vm
+signals: []
+primitive: Distilled technique from pwn_coins
+preconditions: []
+strategy:
+- Handcrafted static-PIE binary without libc.
+- Allocates RWX page at `base + 0x4000` with `mmap`, places `win` shellcode (`open("/flag",
+  O_RDONLY)` and `sendfile` to stdout) at random offset `win_addr = base + 0x4000
+  + r12` ($0 \le r12 \le 0xfffd8$), and makes it RX via `mprotect`.
+- Leaks `base` and `flag price = win_addr - base`.
+- Reads up to 248 bytes (31 QWORDs) to the stack. Each QWORD must be a valid pointer
+  to one of 32 coin functions; the last QWORD must be `shilling` (`jmp rax`).
+- 'Validation ends with `stc; glhf: ret`, which executes the input buffer as a ROP
+  chain on the stack.'
+- '`quarter` sets `rax = base + 0x1a26`, `cent` adds `r8` to `rax`, and `shilling`
+  jumps to `rax`. Target requirement:'
+- $$r8 = (\text{win\_addr} - \text{base}) - 0x1a26$$
+- 'Denominations form a multi-layer balanced number system:'
+verification:
+- Check verification logic against recovered constraints
+failure_modes: []
+reusable_snippets: []
+source:
+  challenge_hash: fb1b12d92ed95bd8
+  learned_at: '2026-09-18T20:13:49.471198'

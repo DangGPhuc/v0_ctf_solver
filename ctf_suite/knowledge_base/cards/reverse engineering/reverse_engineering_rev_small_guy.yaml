@@ -1,0 +1,33 @@
+id: reverse_engineering_rev_small_guy
+title: rev_small guy
+category: reverse engineering
+fingerprint:
+  file_types: []
+  protections: []
+  tags:
+  - reverse engineering
+signals: []
+primitive: Distilled technique from rev_small guy
+preconditions: []
+strategy:
+- Binary sets up 32-byte input at `0x4d0000` and `w0 = *(uint16_t*)flag` at `0x4d0020`,
+  then calls recursive function `0x400618` up to depth 256.
+- 'At each recursion level $i \in [0, 255]$:'
+- $r8d = (\text{table1}[i] + (w_0 \gg (i \ \& \ 7))) \ \& \ 0x1f$ selects a jump target
+  into a jump table of 32 stub functions.
+- $r9 = \text{table2}[i] \oplus (w_0 \cdot 0x9e3779b97f4a7c15) \pmod{2^{64}}$ is pushed
+  onto the stack as `rcx`.
+- At depth 256, an exception is thrown (`__cxa_throw`).
+- Unwinding executes 256 stack frames backwards ($i = 255, \dots, 0$) using `.eh_frame`
+  DWARF `DW_CFA_val_expression` rules.
+- The DWARF rules implement a 32-operation VM operating on registers `rbx, r12, r13,
+  r14` modulo $2^{64}$, with operation $i$ using `rcx = rcxs[i+1]`.
+- At the catch block in `main`, `[rbx, r12, r13, r14]` are saved and compared against
+  target `[0x1bc6f31c128e799d, 0x91434b88502f7096, 0xb66209ec964bce23, 0xb4e75307d14b54f3]`.
+verification:
+- Check verification logic against recovered constraints
+failure_modes: []
+reusable_snippets: []
+source:
+  challenge_hash: 4f5c38b07fa628e5
+  learned_at: '2026-09-18T20:13:49.470208'

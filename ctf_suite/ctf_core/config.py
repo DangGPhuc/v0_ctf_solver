@@ -12,6 +12,7 @@ class CTFSettings(BaseSettings):
     flag_format: Optional[str] = Field(default=r"^FLAG\{.+\}$", validation_alias="FLAG_FORMAT")
     timeout: int = Field(default=30, validation_alias="TIMEOUT")
     workspace_dir: Optional[str] = Field(default=None, validation_alias="WORKSPACE_DIR")
+    runtime_dir: Optional[str] = Field(default=None, validation_alias="CTF_RUNTIME_DIR")
 
     model_config = SettingsConfigDict(
         env_file=".env",

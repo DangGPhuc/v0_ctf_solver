@@ -26,6 +26,7 @@ venv/
 env/
 
 # CTF Workspace & Runtime Artifacts
+.runtime/
 CTF_Workspace/
 .downloads/
 *.downloads/

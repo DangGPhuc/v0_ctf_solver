@@ -1,0 +1,28 @@
+id: pwn_shellcoding_pwn_byoc
+title: pwn_BYOC
+category: pwn (shellcoding
+fingerprint:
+  file_types: []
+  protections: []
+  tags:
+  - pwn (shellcoding
+signals: []
+primitive: Distilled technique from pwn_BYOC
+preconditions: []
+strategy:
+- 'Binary creates an anonymous RWX memory mapping of 200 bytes using `mmap`, reads
+  up to 200 bytes from stdin, and jumps directly to it as a function pointer: `((void
+  (*)(void))code)();`.'
+- No seccomp or sandboxing enabled.
+- Constructed a 41-byte x86-64 shellcode using pwntools `shellcraft.cat('/flag.txt')`
+  (`open`, `sendfile`/`read+write` to stdout).
+- Sent the shellcode over TLS-wrapped TCP (`openssl s_client -quiet -connect HOST:1337`).
+- Remote service executed the shellcode and printed the flag.
+- 'Status**: Solved & Submitted ✔'
+verification:
+- Check verification logic against recovered constraints
+failure_modes: []
+reusable_snippets: []
+source:
+  challenge_hash: 9913e337f30360f9
+  learned_at: '2026-09-18T20:13:49.467204'

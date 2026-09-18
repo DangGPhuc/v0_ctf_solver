@@ -1,0 +1,20 @@
+id: web_web_file_monster
+title: web_File Monster
+category: web
+fingerprint:
+  file_types: []
+  protections: []
+  tags:
+  - web
+signals: []
+primitive: Distilled technique from web_File Monster
+preconditions: []
+strategy:
+- Reverse engineering / static triage
+verification:
+- Check verification logic against recovered constraints
+failure_modes: []
+reusable_snippets: []
+source:
+  challenge_hash: 1f4d7fcff87a28de
+  learned_at: '2026-09-18T20:13:49.488286'

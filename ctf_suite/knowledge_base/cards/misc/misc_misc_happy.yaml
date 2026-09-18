@@ -1,0 +1,20 @@
+id: misc_misc_happy
+title: misc_happy
+category: misc
+fingerprint:
+  file_types: []
+  protections: []
+  tags:
+  - misc
+signals: []
+primitive: Distilled technique from misc_happy
+preconditions: []
+strategy:
+- Reverse engineering / static triage
+verification:
+- Check verification logic against recovered constraints
+failure_modes: []
+reusable_snippets: []
+source:
+  challenge_hash: 271c736e0ab36757
+  learned_at: '2026-09-18T20:13:49.485781'
