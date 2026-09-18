@@ -1,39 +1,39 @@
 # ⚡ v0_ctf_solver — Autonomous CTF Lifecycle & Solving Orchestrator
 
-An autonomous, multi-agent CTF competition orchestration framework and specialized reverse engineering/exploitation suite for CTFd, GZCTF, and CyberHX/Supabase platforms.
+An autonomous CTF competition orchestration framework and specialized exploitation suite for CTFd, GZCTF, and CyberHX/Supabase platforms. Built on an ephemeral runtime architecture, typed action execution boundaries, and on-demand external knowledge retrieval.
 
 ---
 
 ## 🏗️ Architecture Overview
 
 ```text
-v0_ctf_solver/
-├── ctf                       # Unified CLI launcher entrypoint
-├── ctf_suite/                # Core CTF Lifecycle Engine
-│   ├── ctf_core/
-│   │   ├── cli/              # Typer CLI subcommands (auto, pull, solve, advisor, instance, status)
-│   │   ├── platforms/        # Platform Adapters (CyberHX, CTFd, GZCTF) with token refresh engine
-│   │   ├── downloaders/      # Parallel resilient attachment downloaders
-│   │   ├── services/         # Pull, Submit, Instance, Auto-pipeline services
-│   │   ├── workspace/        # 4-tier Workspace Builder (challenge/, script/, solver/, writeup/)
-│   │   ├── meta/             # Meta-layer (Dream-RSI discovery trees & offline replay)
-│   │   └── prompts/          # State capsules & contract compilers
-│   └── knowledge_base/       # Curated tactical cards & indexed patterns
-├── reverse-skill/            # Complete CTF Exploitation Playbooks & Weaponized Toolchains
-│   ├── skills/               # Domain-specific playbooks (Pwn, Rev, Crypto, Web, Forensics, Audit)
-│   ├── toolchain/            # IDA Pro MCP server, wrappers, process management
-│   └── templates/            # Standard solver templates (PWN ROP, Heap, Z3, Web async)
-├── .agents/                  # Agent Skills & ReAct Dual-Agent Coordination Protocols
-│   ├── ctf-anti-ide/         # Lifecycle & Closed-loop solving agent
-│   ├── ctf-advisor/          # Strategic Advisor protocol (Anti-IDE ↔ ChatGPT Web)
-│   ├── ctf-audit/            # Whitebox source auditing & ReAct reasoning
-│   ├── ctf-pwn/              # Binary exploitation playbook
-│   ├── ctf-rev/              # Reverse engineering playbook & IDA Pro workflow
-│   ├── ctf-crypto/           # Cryptography attack suite
-│   ├── ctf-web/              # Web application exploitation playbook
-│   └── ctf-forensics/        # Network, Memory, Disk & Stego forensics
-└── SAVED_NOTES.md            # Accumulated Writeups, Exploit Techniques & Verified Solutions
+PlatformAdapter (CTFd / GZCTF / CyberHX)
+      ↓ (Lazy Synchronization)
+RuntimeManager (Ephemeral .runtime/<event>/)
+      ↓
+Strategic Advisor ←→ GitHubKnowledgeProvider (Private v0_ctf_knowledge via REST Contents API)
+      ↓
+ExecutionPlan (Typed ExecutionActions: run_solver, run_binary, tool allowlist)
+      ↓
+ContainerExecutor (Docker / Podman: --network none, --cap-drop ALL, isolated env)
+      ↓
+Evidence Evaluator (Flag candidate extraction & evidence verification)
+      ↓
+SubmitService (Instant submission & duplicate protection)
+      ↓
+KnowledgeOutbox (~/.local/state/v0_ctf_solver/knowledge-outbox/)
+      ↓
+Knowledge PR Publication (Automated branch creation & Pull Request via gh CLI)
 ```
+
+### Core Architecture Principles
+
+1. **Small Core, Zero Permanent Event Bloat**: Long-term repository state stores only framework code and operational agent skills (`.agents/skills/` < 500 KB).
+2. **Ephemeral Runtime (`.runtime/`)**: Challenge workspaces, input attachments, and solver experiments are materialized on-demand under `.runtime/<event>/challenges/<id>/` and can be cleaned up immediately or post-event.
+3. **External Remote Knowledge (`v0_ctf_knowledge`)**: Reusable technique cards and reference manuals live in the external `DangGPhuc/v0_ctf_knowledge` repository, accessed on-demand like a virtual drive using authenticated GitHub REST Contents API and local TTL caching.
+4. **Strict Container Isolation**: Untrusted challenges execute inside rootless containers with dropped capabilities (`--cap-drop ALL`), `no-new-privileges`, isolated network profiles (`none` by default, `bridge` for remote targets), and stripped host secrets. Untrusted code is **never** silently re-executed on the host.
+5. **Typed Execution Boundaries**: Models cannot supply arbitrary prose or shell commands. The executor only accepts structured `ExecutionAction` objects with path containment restricted to `work_dir` and tools restricted to an explicit allowlist.
+6. **Closed Knowledge Feedback Loop**: Solved challenges stage candidate technique cards into `~/.local/state/v0_ctf_solver/knowledge-outbox/`. The `ctf knowledge publish` command validates, branches, rebuilds indexes, and opens a Pull Request on GitHub.
 
 ---
 
@@ -42,49 +42,114 @@ v0_ctf_solver/
 ### 1. Requirements
 
 - Python 3.10+
-- `httpx`, `typer`, `rich`, `pydantic`, `pydantic-settings`
-- Standard CTF tools (`pwntools`, `z3-solver`, `angr`, `tshark`, etc.)
+- Container engine: `docker` or `podman` (for sandboxed execution)
+- GitHub CLI: `gh` (authenticated via `gh auth login`)
+- Standard CTF tools: `pwntools`, `z3-solver`, `file`, `strings`, `checksec`, `readelf`
 
-### 2. Configure Environment
-
-Copy `.env.example` to `.env`:
+### 2. Installation
 
 ```bash
-cp ctf_suite/.env.example .env
+git clone https://github.com/DangGPhuc/v0_ctf_solver.git
+cd v0_ctf_solver
+python3 -m pip install -e .
 ```
 
-Set your CTF platform target and credentials in `.env`:
+### 3. Configuration
+
+Configure target CTF credentials in `.env`:
+
 ```env
 PLATFORM_URL="https://ctf.cyberhx.com"
 SESSION_COOKIE="cf_clearance=..."
 API_TOKEN="eyJ..."
-REFRESH_TOKEN="..."
-FLAG_FORMAT="^Null0rigin\{.+\}$"
-```
-
-### 3. Usage Commands
-
-```bash
-# View dashboard and unsolved challenge tree
-./ctf status
-
-# Pull all challenges and build 4-tier workspaces
-./ctf pull -o CTF_Workspace
-
-# Run complete closed-loop autonomous solver pipeline
-./ctf auto -o CTF_Workspace
-
-# Submit a flag right away
-./ctf submit --id <CHALLENGE_ID> -f "FLAG{...}"
-
-# Manage dynamic Docker containers
-./ctf instance start <CHALLENGE_ID>
-./ctf instance stop <CHALLENGE_ID>
+FLAG_FORMAT="^FLAG\{.+\}$"
+CTF_RUNTIME_DIR=".runtime"
+KNOWLEDGE_ENABLED=true
+KNOWLEDGE_REPO="DangGPhuc/v0_ctf_knowledge"
+KNOWLEDGE_REF="main"
+KNOWLEDGE_OFFLINE=false
 ```
 
 ---
 
-## 🔒 Security & Safe Practice
+## 🛠️ CLI Reference
 
-- Secret configurations (`.env`) and tournament tokens are strictly ignored by `.gitignore`.
-- Raw challenge binary dumps and massive attachments are cached locally in ephemeral workspaces without polluting git history.
+### Challenge Lifecycle & Autonomous Solving
+
+```bash
+# List unsolved challenges directly from CTF platform
+ctf list
+
+# Sync challenges into runtime metadata (.runtime/<event>/event.json)
+ctf pull
+
+# Run fully closed-loop autonomous solver cycle
+ctf auto --max-iter 5 --executor auto
+
+# Solve a specific challenge by ID
+ctf solve 123 --max-iter 5 --executor container
+
+# Submit a flag immediately
+ctf submit 123 "FLAG{example_flag}"
+
+# View runtime status
+ctf status
+
+# Clean up ephemeral runtime artifacts
+ctf cleanup challenge 123
+ctf cleanup event
+ctf cleanup all
+```
+
+### Execution Modes & Security
+
+The executor supports four explicit modes:
+- `--executor auto` (Default): Uses `ContainerExecutor` (Docker/Podman). If no container engine is active, fails safely to prevent untrusted code execution on host. Host fallback requires explicit `--allow-local-fallback`.
+- `--executor container`: Strict container isolation with dropped capabilities and `--network none`.
+- `--executor restricted-local`: Subprocess execution on host without `shell=True`, strictly containing paths inside `work_dir` and restricting binaries to an allowlist.
+- `--executor unsafe-local`: Direct host shell execution. Dangerous.
+
+### Remote Knowledge Management (`v0_ctf_knowledge`)
+
+```bash
+# Verify knowledge connectivity, authentication, and cache status
+ctf knowledge doctor
+
+# Synchronize latest index from remote GitHub repository
+ctf knowledge sync
+
+# Search technique cards by fingerprint query
+ctf knowledge search "rop static elf" --category pwn
+
+# Fetch a specific technique card
+ctf knowledge fetch pwn.rop.static-elf-syscall-chain
+
+# Offline search using local TTL cache
+ctf knowledge search "rop static elf" --category pwn --offline
+
+# Inspect staged candidate cards in outbox
+ctf knowledge candidates
+
+# Validate a candidate card for security and schema conformance
+ctf knowledge validate ~/.local/state/v0_ctf_solver/knowledge-outbox/pwn.sample.yaml
+
+# Publish candidate to v0_ctf_knowledge via Pull Request
+ctf knowledge publish ~/.local/state/v0_ctf_solver/knowledge-outbox/pwn.sample.yaml
+ctf knowledge publish --all-validated
+
+# Clear local knowledge cache
+ctf knowledge cache-clean
+```
+
+### Toolchains & MCP Integrations
+
+```bash
+# List available and installed toolchains
+ctf tools list
+
+# Check health and dependencies of a toolchain
+ctf tools doctor ida-pro-mcp
+
+# Install a toolchain from its manifest
+ctf tools install ida-pro-mcp
+```
