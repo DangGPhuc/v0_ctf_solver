@@ -17,6 +17,8 @@ from ..advisor.browser_bridge import BrowserBridge
 from ..triage.static import StaticTriage
 from ..knowledge.provider import KnowledgeProvider
 from ..knowledge.github_provider import GitHubKnowledgeProvider
+from ..knowledge.models import KnowledgeQuery
+from ..config import load_config
 from ..meta.tree import DiscoveryTree, DiscoveryNode
 from ..meta.event_recorder import EventRecorder
 from ..meta.policy import ExplorationPolicy
@@ -48,18 +50,30 @@ class AdvisorService:
     def __init__(
         self,
         workspace_dir: Optional[Path] = None,
-        reverse_skill_dir: Optional[Path] = None,
         runtime_manager: Optional[RuntimeManager] = None,
         event_id: Optional[str] = None,
         knowledge_provider: Optional[KnowledgeProvider] = None,
+        browser_bridge: Optional[BrowserBridge] = None,
     ):
         self.workspace_dir = Path(workspace_dir).resolve() if workspace_dir else Path.cwd()
         self.runtime_manager = runtime_manager or RuntimeManager()
         self.event_id = event_id or "default_event"
         self.policy = ExplorationPolicy.load_active_policy()
         self.kb_compiler = KnowledgeCompiler()
-        self.knowledge_provider = knowledge_provider or GitHubKnowledgeProvider(offline=True)
-        self.browser_bridge = BrowserBridge()
+        self.browser_bridge = browser_bridge or BrowserBridge()
+
+        cfg = load_config(self.workspace_dir)
+        if knowledge_provider:
+            self.knowledge_provider = knowledge_provider
+        elif getattr(cfg, "knowledge_enabled", True):
+            self.knowledge_provider = GitHubKnowledgeProvider(
+                repo=cfg.knowledge_repo,
+                ref=cfg.knowledge_ref,
+                offline=cfg.knowledge_offline,
+                ttl_seconds=cfg.knowledge_cache_ttl,
+            )
+        else:
+            self.knowledge_provider = GitHubKnowledgeProvider(offline=True)
 
     def _find_chall_dir(self, challenge_id: Any) -> Path:
         cp = self.runtime_manager.challenge_path(self.event_id, challenge_id)
@@ -264,6 +278,118 @@ class AdvisorService:
 
         return "\n".join(findings) + "\n"
 
+    def _build_knowledge_query(
+        self,
+        meta: Dict[str, Any],
+        chall_dir: Optional[Path] = None,
+        active_hypothesis: Optional[str] = None,
+    ) -> KnowledgeQuery:
+        """
+        Constructs a structured KnowledgeQuery using deep challenge fingerprint:
+        - normalized category
+        - challenge tags
+        - detected file types & architecture
+        - binary mitigations & protections (checksec)
+        - domain-specific keywords extracted from description, hints, and hypothesis
+        """
+        raw_cat = (meta.get("category") or "misc").lower().strip()
+        # Category normalization
+        cat_map = {
+            "binary exploitation": "pwn", "reverse engineering": "rev",
+            "cryptography": "crypto", "web exploitation": "web",
+            "devsecoops": "cloud", "devsecops": "cloud",
+        }
+        category = cat_map.get(raw_cat, raw_cat)
+        tags: List[str] = [t.lower().strip() for t in meta.get("tags", []) if t]
+        
+        file_types: List[str] = list(meta.get("file_types", []))
+        protections: List[str] = list(meta.get("protections", []))
+        keywords: List[str] = list(meta.get("keywords", []))
+        active_hypothesis = active_hypothesis or meta.get("current_hypothesis")
+
+        # Scan input and work directory files for fingerprint if chall_dir provided
+        if chall_dir is not None:
+            for d in [chall_dir / "input", chall_dir / "work"]:
+                if not d.is_dir():
+                    continue
+                for f in d.iterdir():
+                    if not f.is_file() or f.name.startswith("."):
+                        continue
+                    fname = f.name.lower()
+                    # Extension heuristics
+                    if fname.endswith((".py", ".pyc")):
+                        file_types.append("python")
+                    elif fname.endswith((".pcap", ".pcapng")):
+                        file_types.append("pcap")
+                    elif fname.endswith((".zip", ".tar", ".gz")):
+                        file_types.append("archive")
+                    elif fname.endswith((".apk", ".dex")):
+                        file_types.append("apk")
+                    elif fname.endswith(".sol"):
+                        file_types.append("solidity")
+
+                    # Binary heuristics via ELF header and checksec
+                    try:
+                        with open(f, "rb") as bf:
+                            hdr = bf.read(16)
+                        if hdr.startswith(b"\x7fELF"):
+                            file_types.append("elf")
+                            if hdr[4] == 2:
+                                tags.append("x86-64")
+                            elif hdr[4] == 1:
+                                tags.append("x86")
+
+                            if shutil.which("checksec"):
+                                csec = subprocess.run(["checksec", f"--file={f}"], capture_output=True, text=True, timeout=3)
+                                cout = (csec.stdout + csec.stderr).lower()
+                                if "no canary" in cout:
+                                    protections.append("no-canary")
+                                elif "canary found" in cout:
+                                    protections.append("canary")
+                                if "no pie" in cout:
+                                    protections.append("no-pie")
+                                elif "pie enabled" in cout:
+                                    protections.append("pie")
+                                if "nx disabled" in cout:
+                                    protections.append("no-nx")
+                                elif "nx enabled" in cout:
+                                    protections.append("nx")
+                                if "partial relro" in cout:
+                                    protections.append("partial-relro")
+                                elif "full relro" in cout:
+                                    protections.append("full-relro")
+                    except Exception:
+                        pass
+
+        # Text keyword extraction from description & hints
+        desc = meta.get("description", "") or ""
+        hints = " ".join([h.get("content", str(h)) if isinstance(h, dict) else str(h) for h in meta.get("hints", [])])
+        full_text = f"{meta.get('name', '')} {desc} {hints} {active_hypothesis or ''}".lower()
+
+        CTF_VOCAB = {
+            "rop", "overflow", "gadget", "syscall", "ret2libc", "heap", "tcache", "fastbin",
+            "format", "printf", "shellcode", "seccomp", "canary", "pie", "static-elf",
+            "rsa", "ecc", "lattice", "lwe", "ecdsa", "aes", "cbc", "padding",
+            "sqli", "ssti", "jwt", "ssrf", "xss", "traversal", "deserialization",
+            "kernel", "driver", "zephyr", "bluetooth", "arm", "mips", "firmware",
+            "pcap", "usb", "volatility", "stego"
+        }
+        words = re.findall(r"[a-z0-9_\-]+", full_text)
+        for w in words:
+            if w in CTF_VOCAB and w not in keywords:
+                keywords.append(w)
+            if w in CTF_VOCAB and w not in tags:
+                tags.append(w)
+
+        return KnowledgeQuery(
+            category=category,
+            tags=list(dict.fromkeys(tags)),
+            file_types=list(dict.fromkeys(file_types)),
+            protections=list(dict.fromkeys(protections)),
+            keywords=keywords,
+            current_hypothesis=active_hypothesis,
+        )
+
     def compile_context(self, challenge_id: Any) -> Dict[str, Any]:
         """
         Gom ngữ cảnh theo chuẩn State Capsule & Prompt Compiler (kết hợp Dream-RSI & Prompt Master):
@@ -293,12 +419,23 @@ class AdvisorService:
             else "*Không có hint.*"
         )
 
-        # 1. Thu thập Knowledge Cards tương tự qua KnowledgeProvider
+        # 1. Thu thập Knowledge Cards tương tự qua KnowledgeProvider với Challenge Fingerprint đa chiều
         retrieved_cards = []
         try:
-            from ..knowledge.models import KnowledgeQuery
-            kq = KnowledgeQuery(category=category, keywords=[name])
-            hits = self.knowledge_provider.search(kq, limit=2)
+            active_hypo_stmt = None
+            active_h_id = state.get("active_hypothesis")
+            if active_h_id and hypotheses_list:
+                for h in hypotheses_list:
+                    if h.get("id") == active_h_id:
+                        active_hypo_stmt = h.get("statement")
+                        break
+
+            kq = self._build_knowledge_query(
+                meta=meta,
+                chall_dir=chall_dir,
+                active_hypothesis=active_hypo_stmt,
+            )
+            hits = self.knowledge_provider.search(kq, limit=5)
             for h in hits:
                 doc = self.knowledge_provider.fetch(h)
                 if doc:
@@ -309,8 +446,8 @@ class AdvisorService:
                         "summary": doc.summary,
                         "technique": doc.technique_steps,
                     })
-        except Exception:
-            pass
+        except Exception as e:
+            console.print(f"[yellow]⚠️ Knowledge query failed: {e}. Continuing with 0 retrieved cards.[/yellow]")
 
         # 2. Xây dựng State Capsule (chắt lọc tri thức xác thực, tránh tràn context)
         depth = self.policy.prompt_policy.get("recent_nodes_depth", 4)
@@ -458,8 +595,8 @@ class AdvisorService:
         # Fallback Mechanism
         if not advisor_response:
             console.print("[yellow]🔄 Chuyển sang chế độ Fallback: Copy Prompt vào Clipboard & Mở Firefox...[/yellow]")
-            BrowserBridge.copy_to_clipboard(prompt)
-            BrowserBridge.open_firefox("https://chatgpt.com/")
+            self.browser_bridge.copy_to_clipboard(prompt)
+            self.browser_bridge.open_firefox("https://chatgpt.com/")
             console.print("[green]✔ Đã copy Prompt vào Clipboard hệ thống! Bạn chỉ cần ấn Ctrl+V trên Firefox.[/green]")
 
             adv_result = AdvisorResult(
@@ -926,7 +1063,7 @@ class AdvisorService:
         recorder = EventRecorder(advisor_dir)
 
         solver_code = None
-        solver_path = (chall_dir / "work" / "solve.py") if (chall_dir / "work" / "solve.py").is_file() else (chall_dir / "solver" / "solve.py")
+        solver_path = chall_dir / "work" / "solve.py"
         if solver_path.is_file():
             solver_code = solver_path.read_text(encoding="utf-8")
 

@@ -1,18 +1,57 @@
 import json
 import shutil
+import time
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 class KnowledgeCache:
-    def __init__(self, base_dir: Optional[Path] = None):
+    """
+    On-demand local cache for remote knowledge indexes and YAML documents.
+    Tracks metadata including cached_at timestamp and freshness TTL.
+    """
+
+    def __init__(self, base_dir: Optional[Path] = None, default_ttl_seconds: int = 900):
         self.base_dir = base_dir or (Path.home() / ".cache" / "v0_ctf_solver" / "knowledge")
+        self.default_ttl_seconds = default_ttl_seconds
         self.indexes_dir = self.base_dir / "indexes"
         self.objects_dir = self.base_dir / "objects"
         self.indexes_dir.mkdir(parents=True, exist_ok=True)
         self.objects_dir.mkdir(parents=True, exist_ok=True)
 
     def _safe_name(self, repo: str, ref: str) -> str:
-        return f"{repo.replace('/', '_')}_{ref}"
+        return f"{repo.replace('/', '_')}_{ref.replace('/', '_')}"
+
+    def _meta_path(self, repo: str, ref: str) -> Path:
+        return self.indexes_dir / f"{self._safe_name(repo, ref)}_meta.json"
+
+    def get_index_metadata(self, repo: str, ref: str) -> Optional[Dict[str, Any]]:
+        mpath = self._meta_path(repo, ref)
+        if mpath.is_file():
+            try:
+                return json.loads(mpath.read_text(encoding="utf-8"))
+            except Exception:
+                pass
+        return None
+
+    def is_index_fresh(self, repo: str, ref: str, ttl_seconds: Optional[int] = None) -> bool:
+        """
+        Determines whether the cached index is still fresh according to TTL.
+        """
+        idx_path = self.indexes_dir / f"{self._safe_name(repo, ref)}_index.jsonl"
+        if not idx_path.is_file():
+            return False
+
+        meta = self.get_index_metadata(repo, ref)
+        effective_ttl = ttl_seconds if ttl_seconds is not None else (meta.get("ttl_seconds", self.default_ttl_seconds) if meta else self.default_ttl_seconds)
+        
+        if meta and "cached_at_ts" in meta:
+            age = time.time() - meta["cached_at_ts"]
+            return age < effective_ttl
+
+        # Fallback to mtime if meta is absent
+        age = time.time() - idx_path.stat().st_mtime
+        return age < effective_ttl
 
     def get_cached_index(self, repo: str, ref: str) -> Optional[List[Dict[str, Any]]]:
         idx_path = self.indexes_dir / f"{self._safe_name(repo, ref)}_index.jsonl"
@@ -29,14 +68,25 @@ class KnowledgeCache:
         except Exception:
             return None
 
-    def store_index(self, repo: str, ref: str, entries: List[Dict[str, Any]]):
+    def store_index(self, repo: str, ref: str, entries: List[Dict[str, Any]], ttl_seconds: Optional[int] = None):
         idx_path = self.indexes_dir / f"{self._safe_name(repo, ref)}_index.jsonl"
         with open(idx_path, "w", encoding="utf-8") as f:
             for ent in entries:
                 f.write(json.dumps(ent, ensure_ascii=False) + "\n")
 
-    def save_index(self, repo: str, ref: str, entries: List[Dict[str, Any]]):
-        self.store_index(repo, ref, entries)
+        # Save metadata with timestamp and TTL
+        meta = {
+            "repo": repo,
+            "ref": ref,
+            "count": len(entries),
+            "cached_at": datetime.now(timezone.utc).isoformat(),
+            "cached_at_ts": time.time(),
+            "ttl_seconds": ttl_seconds if ttl_seconds is not None else self.default_ttl_seconds,
+        }
+        self._meta_path(repo, ref).write_text(json.dumps(meta, indent=2), encoding="utf-8")
+
+    def save_index(self, repo: str, ref: str, entries: List[Dict[str, Any]], ttl_seconds: Optional[int] = None):
+        self.store_index(repo, ref, entries, ttl_seconds=ttl_seconds)
 
     def get_index(self, repo: str, ref: str) -> Optional[List[Dict[str, Any]]]:
         return self.get_cached_index(repo, ref)

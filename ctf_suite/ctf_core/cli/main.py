@@ -179,7 +179,9 @@ def auto_cmd(
 def solve_cmd(
     challenge_id: str = typer.Argument(..., help="ID bài tập cần giải"),
     max_iter: int = typer.Option(5, "--max-iter", "-m", help="Số vòng lặp ReAct tối đa"),
-    executor_mode: str = typer.Option("auto", "--executor", "-e", help="Chế độ thực thi: 'auto', 'container', 'restricted', 'unsafe-local'"),
+    executor_mode: str = typer.Option("auto", "--executor", "-e", help="Chế độ thực thi: 'auto', 'container', 'restricted-local', 'unsafe-local'"),
+    allow_fallback: bool = typer.Option(False, "--allow-local-fallback", help="Cho phép chạy trên host nếu không có container engine (nguy hiểm)"),
+    allow_net: bool = typer.Option(False, "--allow-network", help="Cho phép container truy cập network bridge cho remote challenges"),
     url: Optional[str] = typer.Option(None, "--url", "-u", help="Platform URL"),
     cookie: Optional[str] = typer.Option(None, "--cookie", "-c", help="Session cookie"),
     token: Optional[str] = typer.Option(None, "--token", "-t", help="API token"),
@@ -195,6 +197,9 @@ def solve_cmd(
         api_token=token,
         max_iterations_per_chall=max_iter,
         cleanup_policy="immediate",
+        executor_mode=executor_mode,
+        allow_local_fallback=allow_fallback,
+        allow_network=allow_net,
     )
     challs = orchestrator.sync_challenges(download_attachments=False)
     target = None
@@ -441,11 +446,18 @@ def knowledge_search_cmd(
     category: Optional[str] = typer.Option(None, "--category", "-C", help="Lọc theo category"),
     limit: int = typer.Option(5, "--limit", "-l", help="Số lượng kết quả tối đa"),
     offline: bool = typer.Option(False, "--offline", help="Chỉ tìm kiếm trong cache cục bộ"),
+    repo: Optional[str] = typer.Option(None, "--repo", "-r", help="GitHub repository"),
+    ref: Optional[str] = typer.Option(None, "--ref", help="Branch / Tag"),
 ):
     """
     Tìm kiếm Thẻ Tri Thức bằng thuật toán tính điểm deterministic (category, tags, keywords).
     """
-    provider = GitHubKnowledgeProvider(offline=offline)
+    kwargs = {"offline": offline}
+    if repo:
+        kwargs["repo"] = repo
+    if ref:
+        kwargs["ref"] = ref
+    provider = GitHubKnowledgeProvider(**kwargs)
     kq = KnowledgeQuery(category=category, keywords=query.split())
     hits = provider.search(kq, limit=limit)
 
@@ -467,11 +479,18 @@ def knowledge_search_cmd(
 @knowledge_app.command(name="fetch")
 def knowledge_fetch_cmd(
     card_id: str = typer.Argument(..., help="ID của thẻ tri thức cần tải"),
+    repo: Optional[str] = typer.Option(None, "--repo", "-r", help="GitHub repository"),
+    ref: Optional[str] = typer.Option(None, "--ref", help="Branch / Tag"),
 ):
     """
     Tải nội dung chi tiết của một Thẻ Tri Thức từ remote GitHub vào cache và hiển thị.
     """
-    provider = GitHubKnowledgeProvider()
+    kwargs = {}
+    if repo:
+        kwargs["repo"] = repo
+    if ref:
+        kwargs["ref"] = ref
+    provider = GitHubKnowledgeProvider(**kwargs)
     doc = provider.fetch(card_id)
     if not doc:
         console.print(f"[bold red]❌ Không tìm thấy thẻ tri thức: {card_id}[/bold red]")
@@ -530,6 +549,165 @@ def knowledge_validate_cmd(candidate_path: Path = typer.Argument(..., help="Đư
             console.print(f"  - {e}")
         raise typer.Exit(code=1)
     console.print("[bold green]✔ Thẻ ứng viên đạt tiêu chuẩn chất lượng và an toàn tuyệt đối![/bold green]")
+
+
+@knowledge_app.command(name="doctor")
+def knowledge_doctor_cmd(
+    repo: Optional[str] = typer.Option(None, "--repo", "-r", help="GitHub repository"),
+    ref: Optional[str] = typer.Option(None, "--ref", help="Branch / Tag"),
+):
+    """
+    Kiểm tra toàn diện tình trạng kết nối, xác thực và bộ đệm của Remote Knowledge Repository.
+    """
+    kwargs = {}
+    if repo:
+        kwargs["repo"] = repo
+    if ref:
+        kwargs["ref"] = ref
+    provider = GitHubKnowledgeProvider(**kwargs)
+    doc = provider.check_doctor()
+
+    table = Table(title="🏥 Knowledge Subsystem Diagnostics", header_style="bold cyan")
+    table.add_column("Thuộc tính", style="bold", width=25)
+    table.add_column("Giá trị", width=50)
+
+    table.add_row("Provider", doc["provider"])
+    table.add_row("Repository", doc["repo"])
+    table.add_row("Branch / Ref", doc["ref"])
+    table.add_row("Authenticated", "[green]YES (Token active)[/green]" if doc["authenticated"] else "[yellow]NO (Public / unauthenticated only)[/yellow]")
+    table.add_row("Remote Reachable", "[green]YES[/green]" if doc["remote_reachable"] else "[red]NO[/red]")
+    table.add_row("Cache Status", f"[cyan]{doc['cache_status'].upper()}[/cyan] (TTL: {doc['ttl_seconds']}s)")
+    table.add_row("Index Entry Count", str(doc["index_entry_count"]))
+    table.add_row("Last Sync", str(doc["last_sync"]))
+
+    console.print(table)
+
+
+@knowledge_app.command(name="publish")
+def knowledge_publish_cmd(
+    candidate_path: Optional[Path] = typer.Argument(None, help="Đường dẫn file YAML ứng viên"),
+    all_validated: bool = typer.Option(False, "--all-validated", help="Tự động xuất bản tất cả ứng viên hợp lệ trong outbox"),
+):
+    """
+    Xuất bản thẻ tri thức ứng viên lên v0_ctf_knowledge thông qua Pull Request an toàn.
+    KHÔNG BAO GIỜ push trực tiếp lên main.
+    """
+    import tempfile
+    import shutil
+    import subprocess
+    import yaml
+
+    outbox = KnowledgeOutbox()
+    candidates_to_publish: List[Path] = []
+
+    if all_validated:
+        cands = outbox.list_candidates()
+        if not cands:
+            console.print("[yellow]Hộp thư đi trống. Không có ứng viên nào để xuất bản.[/yellow]")
+            return
+        for c in cands:
+            cpath = Path(c.get("file_path", ""))
+            if cpath.is_file():
+                errs = outbox.validate_candidate(cpath)
+                if not errs:
+                    candidates_to_publish.append(cpath)
+                else:
+                    console.print(f"[dim]Bỏ qua ứng viên chưa hợp lệ: {cpath.name}[/dim]")
+    elif candidate_path:
+        cand_p = Path(candidate_path).resolve()
+        if not cand_p.is_file():
+            console.print(f"[bold red]❌ Tệp ứng viên không tồn tại: {cand_p}[/bold red]")
+            raise typer.Exit(code=1)
+        errs = outbox.validate_candidate(cand_p)
+        if errs:
+            console.print(f"[bold red]❌ Ứng viên không đạt chuẩn chất lượng/an toàn:[/bold red]")
+            for e in errs:
+                console.print(f"  - {e}")
+            raise typer.Exit(code=1)
+        candidates_to_publish.append(cand_p)
+    else:
+        console.print("[bold red]❌ Vui lòng chỉ định đường dẫn tệp ứng viên hoặc sử dụng cờ --all-validated.[/bold red]")
+        raise typer.Exit(code=1)
+
+    if not candidates_to_publish:
+        console.print("[yellow]Không tìm thấy ứng viên hợp lệ nào để xuất bản.[/yellow]")
+        return
+
+    # Check gh CLI
+    if not shutil.which("gh"):
+        console.print("[bold red]❌ Yêu cầu gh CLI ('gh') để tạo Pull Request.[/bold red]")
+        raise typer.Exit(code=1)
+
+    repo_target = "DangGPhuc/v0_ctf_knowledge"
+    console.print(f"[bold cyan]🚀 Bắt đầu quy trình xuất bản {len(candidates_to_publish)} ứng viên lên {repo_target}...[/bold cyan]")
+
+    for cand_p in candidates_to_publish:
+        try:
+            data = yaml.safe_load(cand_p.read_text(encoding="utf-8"))
+            cid = data.get("id", cand_p.stem)
+            cat = data.get("category", "misc")
+            slug = cid.split(".", 1)[-1] if "." in cid else cid
+            branch_name = f"knowledge/candidate-{slug}"
+
+            with tempfile.TemporaryDirectory() as tmp_dir:
+                tmp_path = Path(tmp_dir)
+                console.print(f"[dim]Cloning {repo_target} vào thư mục tạm...[/dim]")
+                clone_res = subprocess.run(
+                    ["git", "clone", f"https://github.com/{repo_target}.git", str(tmp_path)],
+                    capture_output=True, text=True
+                )
+                if clone_res.returncode != 0:
+                    console.print(f"[bold red]❌ Không thể clone repo {repo_target}: {clone_res.stderr}[/bold red]")
+                    continue
+
+                # Checkout new branch
+                subprocess.run(["git", "checkout", "-b", branch_name], cwd=tmp_path, capture_output=True, check=True)
+
+                # Copy candidate to cards/<category>/<slug>.yaml
+                dest_card = tmp_path / "cards" / cat / f"{slug}.yaml"
+                dest_card.parent.mkdir(parents=True, exist_ok=True)
+                dest_card.write_text(cand_p.read_text(encoding="utf-8"), encoding="utf-8")
+
+                # Rebuild index and validate
+                b_res = subprocess.run(["python3", "scripts/build_index.py"], cwd=tmp_path, capture_output=True, text=True)
+                v_res = subprocess.run(["python3", "scripts/validate.py"], cwd=tmp_path, capture_output=True, text=True)
+                if v_res.returncode != 0:
+                    console.print(f"[bold red]❌ Kiểm tra chất lượng repo thất bại:[/bold red]\n{v_res.stdout}\n{v_res.stderr}")
+                    continue
+
+                # Commit and push branch
+                subprocess.run(["git", "add", "."], cwd=tmp_path, capture_output=True, check=True)
+                subprocess.run(
+                    ["git", "commit", "-m", f"feat(knowledge): add {slug} technique candidate"],
+                    cwd=tmp_path, capture_output=True, check=True
+                )
+                push_res = subprocess.run(["git", "push", "-u", "origin", branch_name], cwd=tmp_path, capture_output=True, text=True)
+                if push_res.returncode != 0:
+                    console.print(f"[bold red]❌ Lỗi push branch {branch_name}: {push_res.stderr}[/bold red]")
+                    continue
+
+                # Create PR via gh
+                pr_title = f"feat(knowledge): candidate technique {cid}"
+                pr_body = (
+                    f"## Autonomous Knowledge Candidate Submission\n\n"
+                    f"- **ID**: `{cid}`\n"
+                    f"- **Category**: `{cat}`\n"
+                    f"- **Title**: {data.get('title', cid)}\n\n"
+                    f"Generated and validated autonomously via v0_ctf_solver."
+                )
+                pr_res = subprocess.run(
+                    ["gh", "pr", "create", "--repo", repo_target, "--head", branch_name, "--base", "main", "--title", pr_title, "--body", pr_body],
+                    cwd=tmp_path, capture_output=True, text=True
+                )
+                if pr_res.returncode == 0:
+                    pr_url = pr_res.stdout.strip()
+                    console.print(f"[bold green]✔ Đã tạo PR xuất bản thành công: [cyan]{pr_url}[/cyan][/bold green]")
+                else:
+                    console.print(f"[yellow]⚠️ Branch {branch_name} đã được push, nhưng tạo PR gặp lỗi: {pr_res.stderr}[/yellow]")
+
+        except Exception as ex:
+            console.print(f"[bold red]❌ Lỗi khi xuất bản {cand_p.name}: {ex}[/bold red]")
+
 
 # ==============================================================================
 # SUB-APPS: TOOLS

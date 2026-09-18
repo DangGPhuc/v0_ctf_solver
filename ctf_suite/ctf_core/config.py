@@ -13,6 +13,13 @@ class CTFSettings(BaseSettings):
     timeout: int = Field(default=30, validation_alias="TIMEOUT")
     workspace_dir: Optional[str] = Field(default=None, validation_alias="WORKSPACE_DIR")
     runtime_dir: Optional[str] = Field(default=None, validation_alias="CTF_RUNTIME_DIR")
+    knowledge_enabled: bool = Field(default=True, validation_alias="KNOWLEDGE_ENABLED")
+    knowledge_provider: str = Field(default="github", validation_alias="KNOWLEDGE_PROVIDER")
+    knowledge_repo: str = Field(default="DangGPhuc/v0_ctf_knowledge", validation_alias="KNOWLEDGE_REPO")
+    knowledge_ref: str = Field(default="main", validation_alias="KNOWLEDGE_REF")
+    knowledge_offline: bool = Field(default=False, validation_alias="KNOWLEDGE_OFFLINE")
+    knowledge_max_cards: int = Field(default=5, validation_alias="KNOWLEDGE_MAX_CARDS")
+    knowledge_cache_ttl: int = Field(default=900, validation_alias="KNOWLEDGE_CACHE_TTL")
 
     model_config = SettingsConfigDict(
         env_file=".env",
