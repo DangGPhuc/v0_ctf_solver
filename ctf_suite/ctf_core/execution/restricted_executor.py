@@ -8,8 +8,10 @@ from rich.console import Console
 
 from ..models import AdvisorGuidance, ExecutionAction, ExecutionResult
 from .evaluator import ExecutionResultEvaluator
+from .artifacts import ArtifactResolver, ArtifactResolutionError
 
 console = Console()
+
 
 SAFE_ENV_KEYS = ["PATH", "HOME", "LANG", "LC_ALL", "PYTHONPATH"]
 
@@ -114,12 +116,24 @@ class RestrictedLocalExecutor:
         # Notice: guidance.next_actions is human-readable and MUST NOT be executed.
         actions_to_run: List[ExecutionAction] = []
 
+        input_dir = Path(challenge_context.get("input_dir", work_dir.parent / "input")).resolve()
+        if not input_dir.is_dir():
+            input_dir = work_dir
+
         if getattr(guidance, "execution_plan", None):
             actions_to_run.extend(guidance.execution_plan)
         else:
-            # Safe default when execution_plan is absent: run existing work/solve.py if present
+
+            solve_sage = work_dir / "solve.sage"
             solve_script = work_dir / "solve.py"
-            if solve_script.is_file():
+            if solve_sage.is_file():
+                actions_to_run.append(ExecutionAction(
+                    kind="run_sage_file",
+                    argv=["sage", "solve.sage"],
+                    path="solve.sage",
+                    timeout=self.timeout,
+                ))
+            elif solve_script.is_file():
                 actions_to_run.append(ExecutionAction(
                     kind="run_solver",
                     argv=["python3", "solve.py"],
@@ -141,30 +155,37 @@ class RestrictedLocalExecutor:
 
             try:
                 if kind in ["run_solver", "run_python_file"]:
-                    target_script = self._resolve_and_validate_path(action.path or "solve.py", work_dir)
-                    if not target_script.is_file():
-                        raise FileNotFoundError(f"Python target file not found: {target_script}")
-                    rel_target = str(target_script.relative_to(work_dir))
-                    argv = ["python3", rel_target]
+                    target_script = ArtifactResolver.resolve_local(
+                        action.path or "solve.py", input_dir, work_dir, require_exists=True
+                    )
+                    argv = ["python3", str(target_script)]
                     if action.argv and len(action.argv) > 1:
-                        # Allow extra arguments after script name if clean
-                        argv.extend([arg for arg in action.argv[1:] if not any(c in arg for c in [";", "&", "|", "`", "$"])])
+                        clean_args = ArtifactResolver.translate_argv(action.argv[1:], input_dir, work_dir, in_container=False)
+                        argv.extend([arg for arg in clean_args if not any(c in arg for c in [";", "&", "|", "`", "$"])])
+
+                elif kind == "run_sage_file":
+                    if not shutil.which("sage"):
+                        raise FileNotFoundError("SageMath executable ('sage') not installed on host PATH")
+                    target_script = ArtifactResolver.resolve_local(
+                        action.path or "solve.sage", input_dir, work_dir, require_exists=True
+                    )
+                    argv = ["sage", str(target_script)]
+                    if action.argv and len(action.argv) > 1:
+                        clean_args = ArtifactResolver.translate_argv(action.argv[1:], input_dir, work_dir, in_container=False)
+                        argv.extend([arg for arg in clean_args if not any(c in arg for c in [";", "&", "|", "`", "$"])])
 
                 elif kind == "run_binary":
-                    target_bin = self._resolve_and_validate_path(action.path or (action.argv[0] if action.argv else None), work_dir)
-                    if not target_bin.is_file():
-                        raise FileNotFoundError(f"Binary target file not found: {target_bin}")
-                    rel_target = f"./{target_bin.relative_to(work_dir)}"
-                    argv = [rel_target]
+                    bin_target = action.path or (action.argv[0] if action.argv else None)
+                    target_bin = ArtifactResolver.resolve_local(bin_target, input_dir, work_dir, require_exists=True)
+                    argv = [str(target_bin)]
                     if action.argv and len(action.argv) > 1:
-                        argv.extend(action.argv[1:])
+                        clean_args = ArtifactResolver.translate_argv(action.argv[1:], input_dir, work_dir, in_container=False)
+                        argv.extend(clean_args)
 
                 elif kind == "read_file":
-                    target_file = self._resolve_and_validate_path(action.path or (action.argv[0] if action.argv else None), work_dir)
-                    if not target_file.is_file():
-                        raise FileNotFoundError(f"Read target file not found: {target_file}")
-                    rel_target = str(target_file.relative_to(work_dir))
-                    argv = ["cat", rel_target]
+                    read_target = action.path or (action.argv[0] if action.argv else None)
+                    target_file = ArtifactResolver.resolve_local(read_target, input_dir, work_dir, require_exists=True)
+                    argv = ["cat", str(target_file)]
 
                 elif kind == "list_files":
                     argv = ["ls", "-la"]
@@ -176,19 +197,14 @@ class RestrictedLocalExecutor:
                     if not shutil.which(tool_name):
                         raise FileNotFoundError(f"Analysis tool '{tool_name}' not installed on host PATH")
 
-                    # Sanitize tool arguments
                     clean_argv = [tool_name]
-                    for arg in action.argv[1:]:
-                        # If an argument is a path, validate it doesn't escape work_dir
-                        if "/" in arg or ".." in arg:
-                            resolved_arg = self._resolve_and_validate_path(arg, work_dir)
-                            clean_argv.append(str(resolved_arg.relative_to(work_dir)))
-                        else:
-                            clean_argv.append(arg)
+                    raw_args = action.argv[1:] if (action.argv and action.argv[0] == tool_name) else (action.argv or [])
+                    clean_argv.extend(ArtifactResolver.translate_argv(raw_args, input_dir, work_dir, in_container=False))
                     argv = clean_argv
 
                 else:
                     raise ValueError(f"Unsupported execution action kind: '{kind}'")
+
 
             except Exception as e:
                 console.print(f"[bold red]❌ Rejected execution action ({kind}): {e}[/bold red]")

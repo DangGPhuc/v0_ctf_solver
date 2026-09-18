@@ -297,6 +297,9 @@ class ChallengeOrchestrator:
 
         console.print(f"[yellow]⏳ Challenge {cname} reached max iteration limit ({self.max_iterations}). Keeping runtime for resume.[/yellow]")
         return False
+    def run(self, auto_wait_waves: bool = False, poll_interval: int = 45):
+        """Canonical entrypoint to tournament solving loop."""
+        return self.run_tournament_loop(auto_wait_waves=auto_wait_waves, poll_interval=poll_interval)
 
     def run_tournament_loop(self, auto_wait_waves: bool = False, poll_interval: int = 45):
         """Runs tournament solving loop lazily."""

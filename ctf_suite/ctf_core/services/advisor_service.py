@@ -17,7 +17,7 @@ from ..advisor.browser_bridge import BrowserBridge
 from ..triage.static import StaticTriage
 from ..knowledge.provider import KnowledgeProvider
 from ..knowledge.github_provider import GitHubKnowledgeProvider
-from ..knowledge.models import KnowledgeQuery
+from ..knowledge.models import KnowledgeQuery, RetrievedKnowledgeContext
 from ..config import load_config
 from ..meta.tree import DiscoveryTree, DiscoveryNode
 from ..meta.event_recorder import EventRecorder
@@ -327,15 +327,22 @@ class AdvisorService:
         )
 
         # 1. Thu thập Knowledge Cards tương tự qua KnowledgeProvider với Challenge Fingerprint đa chiều
-        retrieved_cards = []
+        retrieved_cards: List[RetrievedKnowledgeContext] = []
+        retrieval_status: str = "SUCCESS"
+        retrieval_error: Optional[str] = None
+
         try:
             active_hypo_stmt = None
-            active_h_id = state.get("active_hypothesis")
+            active_h_id = state.get("active_hypothesis_id") or state.get("active_hypothesis")
+            hypotheses_list = state.get("hypotheses", [])
             if active_h_id and hypotheses_list:
                 for h in hypotheses_list:
-                    if h.get("id") == active_h_id:
-                        active_hypo_stmt = h.get("statement")
+                    h_id = h.get("id") if isinstance(h, dict) else getattr(h, "id", "")
+                    if h_id == active_h_id:
+                        active_hypo_stmt = h.get("statement") if isinstance(h, dict) else getattr(h, "statement", "")
                         break
+            if not active_hypo_stmt and isinstance(state.get("active_hypothesis"), str) and not state.get("active_hypothesis", "").startswith("H"):
+                active_hypo_stmt = state.get("active_hypothesis")
 
             kq = self._build_knowledge_query(
                 meta=meta,
@@ -343,18 +350,28 @@ class AdvisorService:
                 active_hypothesis=active_hypo_stmt,
             )
             hits = self.knowledge_provider.search(kq, limit=5)
-            for h in hits:
-                doc = self.knowledge_provider.fetch(h)
-                if doc:
-                    retrieved_cards.append({
-                        "id": doc.id,
-                        "title": doc.title,
-                        "category": doc.category,
-                        "summary": doc.summary,
-                        "technique": doc.technique_steps,
-                    })
+            if not hits:
+                retrieval_status = "NO_MATCH"
+            else:
+                for h in hits:
+                    doc = self.knowledge_provider.fetch(h)
+                    if doc:
+                        retrieved_cards.append(RetrievedKnowledgeContext.from_doc(doc, confidence=h.score))
         except Exception as e:
-            console.print(f"[yellow]⚠️ Knowledge query failed: {e}. Continuing with 0 retrieved cards.[/yellow]")
+            err_str = str(e).lower()
+            if "offline" in err_str:
+                retrieval_status = "OFFLINE"
+            elif any(k in err_str for k in ["401", "403", "auth", "credential", "unauthorized"]):
+                retrieval_status = "AUTH_FAILED"
+            elif any(k in err_str for k in ["timeout", "connection", "network", "unavailable"]):
+                retrieval_status = "REMOTE_UNAVAILABLE"
+            elif any(k in err_str for k in ["json", "parse", "decode"]):
+                retrieval_status = "PARSE_ERROR"
+            else:
+                retrieval_status = "INTERNAL_ERROR"
+            retrieval_error = str(e)
+            console.print(f"[yellow]⚠️ Knowledge retrieval failed [{retrieval_status}]: {e}. Continuing with 0 retrieved cards.[/yellow]")
+
 
         # 2. Xây dựng State Capsule (chắt lọc tri thức xác thực, tránh tràn context)
         depth = self.policy.prompt_policy.get("recent_nodes_depth", 4)
@@ -438,8 +455,12 @@ class AdvisorService:
             "advisor_dir": advisor_dir,
             "spec": spec,
             "state_capsule": state_capsule,
+            "retrieval_status": retrieval_status,
+            "retrieval_error": retrieval_error,
+            "retrieved_cards": retrieved_cards,
             "violations": violations,
         }
+
 
     def _load_system_prompt(self) -> str:
         """Đọc file advisor_system_prompt.md từ thư mục skill hoặc template mặc định."""
@@ -565,11 +586,18 @@ class AdvisorService:
 
         (advisor_dir / "state.json").write_text(json.dumps(state, indent=2, ensure_ascii=False), encoding="utf-8")
 
+        if guidance.validation_error:
+            adv_status = "ERROR"
+            adv_msg = f"Advisor structured JSON payload invalid: {guidance.validation_error}"
+        else:
+            adv_status = "READY"
+            adv_msg = "Guidance received from strategic advisor"
+
         adv_result = AdvisorResult(
-            status="READY",
+            status=adv_status,
             guidance=guidance,
             provider=provider,
-            message="Guidance received from strategic advisor",
+            message=adv_msg,
         )
 
         return {
@@ -580,7 +608,7 @@ class AdvisorService:
             "guidance_file": guidance_file,
             "guidance": guidance,
             "active_hypothesis": state.get("active_hypothesis"),
-            "status": "READY",
+            "status": adv_status,
             "advisor_result": adv_result,
         }
 
@@ -607,12 +635,20 @@ class AdvisorService:
             state["iteration"] = state.get("iteration", 0) + 1
             state_file.write_text(json.dumps(state, indent=2, ensure_ascii=False), encoding="utf-8")
 
+        if guidance.validation_error:
+            adv_status = "ERROR"
+            adv_msg = f"Manual guidance JSON payload invalid: {guidance.validation_error}"
+        else:
+            adv_status = "READY"
+            adv_msg = "Manual guidance imported and parsed successfully"
+
         return AdvisorResult(
-            status="READY",
+            status=adv_status,
             guidance=guidance,
             provider="manual-import",
-            message="Manual guidance imported and parsed successfully",
+            message=adv_msg,
         )
+
 
     @staticmethod
     def parse_advisor_response(text: str) -> AdvisorGuidance:
@@ -620,18 +656,25 @@ class AdvisorService:
         if not text:
             return AdvisorGuidance(raw_text="")
         
-        # 1. Try to extract JSON codeblock
+        # 1. Try to extract JSON codeblock (Mandatory Structured Execution Plan)
         json_match = re.search(r"```(?:json)?\s*(\{[\s\S]*?\})\s*```", text)
         if json_match:
             try:
                 data = json.loads(json_match.group(1))
                 if isinstance(data, dict):
                     data["raw_text"] = text
-                    return AdvisorGuidance.model_validate(data)
-            except Exception:
-                pass
+                    guidance = AdvisorGuidance.model_validate(data)
+                    guidance.is_structured = True
+                    return guidance
+            except Exception as e:
+                return AdvisorGuidance(
+                    raw_text=text,
+                    validation_error=f"Malformed or invalid structured JSON payload: {e}",
+                    is_structured=False,
+                )
 
-        # 2. Heuristic parsing
+        # 2. Heuristic parsing for human-readable display only.
+        # CRITICAL INVARIANT: execution_plan remains empty. Prose next_actions is NEVER execution authority.
         assessment = ""
         ass_m = re.search(r"(?i)(?:assessment|root cause|phân tích)[:\s]+([^\n]+)", text)
         if ass_m:
@@ -653,8 +696,6 @@ class AdvisorService:
             act_s = act_text.strip()
             if len(act_s) > 5 and not any(kw in act_s.lower() for kw in ["hypothesis", "assessment"]):
                 next_actions.append(Action(type="command", command_or_task=act_s))
-        if not next_actions:
-            next_actions.append(Action(type="command", command_or_task="python3 solve.py"))
 
         requested_evidence: List[str] = []
         ev_m = re.findall(r"(?i)(?:evidence|proof)[:\s]+([^\n]+)", text)
@@ -669,11 +710,14 @@ class AdvisorService:
         return AdvisorGuidance(
             assessment=assessment,
             hypotheses=hypotheses,
+            execution_plan=[],
             next_actions=next_actions,
             requested_evidence=requested_evidence,
             stop_conditions=stop_conditions,
             raw_text=text,
+            is_structured=False,
         )
+
 
     def _build_oracle_command(self, prompt: str, oracle_session: Optional[str] = None) -> Optional[List[str]]:
         oracle_bin = shutil.which("oracle")

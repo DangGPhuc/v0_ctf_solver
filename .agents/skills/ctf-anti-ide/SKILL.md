@@ -1,113 +1,93 @@
 ---
 name: ctf-anti-ide
-description: Autonomous CTF Lifecycle & Solving Agent Skill for Anti-IDE. Orchestrates tournament workflow (pulling challenges, starting/stopping dynamic containers, ChatGPT triage on Firefox, immediate flag submission) and connects with the v0_ctf_knowledge playbooks (Pwn, Rev with IDA Pro MCP, Crypto, Web, Forensics).
-argument-hint: "[pull|auto|chatgpt|status|instance|submit|env] [args...]"
+description: Autonomous CTF Lifecycle & Solving Agent Skill for Anti-IDE. Orchestrates tournament workflow (pulling challenges, lazy materialization in ephemeral runtime, ChatGPT triage, isolated execution, immediate flag submission) and connects with remote v0_ctf_knowledge.
+argument-hint: "[pull|auto|solve|status|triage|instance|submit|env|knowledge] [args...]"
 ---
 
 # Anti-IDE CTF Autonomous Lifecycle & Solver Skill
 
-Unified operational skill enabling the Anti-IDE Agent to autonomously manage competition platforms (CTFd, GZCTF), interact with dynamic Docker containers, triage challenges via ChatGPT Web on Firefox, exploit challenges using the local `v0_ctf_knowledge` repository, and submit flags immediately.
+Operational skill enabling the Anti-IDE Agent to autonomously manage competition platforms (CTFd, GZCTF), interact with dynamic Docker containers, triage challenges via Strategic Advisor, execute experiments safely in isolated sandboxes, and submit flags immediately.
 
 ---
 
-## 1. Quick Command Reference (`./ctf` CLI)
+## 1. Quick Command Reference (`ctf` CLI)
 
-All commands can be invoked via the workspace launcher `./ctf` (or `python3 ctf_suite/ctf.py`):
+All commands can be invoked via `ctf` (or `python -m ctf_core.cli.main`):
 
 | Operation | Canonical CLI Command | Purpose |
 | :--- | :--- | :--- |
-| **All-in-One Auto** | `./ctf auto -u <URL> -c "<COOKIE>"` | Đăng nhập, crawl bài, dựng workspace 4 tầng, sync sang `v0_ctf_knowledge`, sinh prompt ChatGPT cho toàn bộ challenge. |
-| **Set Auth / Config** | `./ctf env set -u <URL> -c "<COOKIE>" -t "<TOKEN>"` | Ghi cấu hình vào `.env` cho Anti-IDE và các solver scripts. |
-| **Pull Event** | `./ctf pull -u <URL> -o <DIR>` | Crawl bài, tải đính kèm song song, dựng workspace 4 tầng chuẩn. |
-| **Advisor Init** | `./ctf advisor init <ID>` | Khởi tạo state.json, findings.md, hypotheses.md, experiments.jsonl cho challenge. |
-| **Advisor Consult** | `./ctf advisor consult <ID>` | Đóng gói L0-L3 context, gọi Oracle Browser Bridge trao đổi trực tiếp với ChatGPT Web. |
-| **Advisor Report** | `./ctf advisor report <ID> -e <EXP_ID> -s <STATUS>` | Báo cáo thực nghiệm, kiểm soát Hypothesis Budget và tự động followup phiên tư vấn. |
-| **Advisor Escalate** | `./ctf advisor escalate <ID> -r "<REASON>"` | Kích hoạt PAL MCP thẩm định chéo khi bế tắc quá 2 lần thử nghiệm thất bại. |
-| **Check Progress** | `./ctf status -w <DIR>` hoặc `./ctf advisor status <ID>` | Xem tiến độ giải, dashboard ReAct, ngân sách giả định. |
-| **Start Container** | `./ctf instance start <CHALLENGE_ID> -w <DIR>` | Bật container, tự động cập nhật `HOST:PORT` vào `solve.py`. |
-| **Stop Container** | `./ctf instance stop <CHALLENGE_ID> -w <DIR>` | Tắt container khi đã giải xong bài. |
-| **Submit Right Away** | `./ctf submit --id <ID> -f "FLAG{...}"` | Nộp flag tức thì để ăn điểm; cảnh báo nộp tay nếu có lỗi. |
-| **Auto Submit All** | `./ctf submit --auto -w <DIR>` | Quét toàn bộ workspace tìm `flag.txt` và nộp tất cả flag mới. |
+| **All-in-One Auto** | `ctf auto -u <URL> -c "<COOKIE>"` | Đồng bộ tournament, nạp bài lazy, chạy vòng lặp ReAct khép kín tự động nộp cờ. |
+| **Solve Challenge** | `ctf solve <ID> -u <URL>` | Giải bài cụ thể với vòng lặp ReAct, sandbox cách ly và nộp cờ tức thì. |
+| **Triage & Fingerprint** | `ctf triage <ID>` | Bóc tách kiến trúc, mitigations (checksec), primitives và tìm Thẻ Tri Thức tương ứng. |
+| **Set Auth / Config** | `ctf env set -u <URL> -c "<COOKIE>" -t "<TOKEN>"` | Ghi cấu hình vào `.env` cho Anti-IDE và solver scripts. |
+| **Pull Event** | `ctf pull -u <URL>` (`--all` để tải attachment) | Đồng bộ metadata bài thi vào cache `.runtime/<event>/event.json` (mặc định lazy). |
+| **Check Progress** | `ctf status` | Xem các challenge đang active trong ephemeral runtime `.runtime/`. |
+| **Knowledge Doctor** | `ctf knowledge doctor` | Chẩn đoán kết nối GitHub REST Contents API tới kho tri thức ngoại vi. |
+| **Dynamic Instance** | `ctf instance start <ID>` / `stop <ID>` | Bật/tắt dynamic container, tự động nhận `HOST:PORT`. |
+| **Submit Flag** | `ctf submit <ID> -f "FLAG{...}"` | Nộp flag tức thì để ăn điểm; cảnh báo can thiệp thủ công nếu platform lỗi. |
+| **Cleanup Runtime** | `ctf cleanup --challenge <ID>` / `--all` | Dọn dẹp an toàn ephemeral runtime sau khi giải xong bài. |
 
 ---
 
-## 2. Quy Trình Tự Động Hóa Khép Kín 5 Bước
-
-Khi User cung cấp **URL** và **Cookie / Token**, Agent sẽ kích hoạt chu trình:
+## 2. Quy Trình Tự Động Hóa Khép Kín (Closed-Loop ReAct)
 
 ```text
-[1. Auth & Pull] ---> [2. Triage & ChatGPT Web] ---> [3. Sync v0_ctf_knowledge] ---> [4. Run Exploits] ---> [5. Submit Flag]
+[Platform] ──> [Triage & Fingerprint] ──> [Remote Knowledge Retrieval]
+                       │
+                       ▼
+             [Strategic Advisor]
+                       │
+                       ▼
+           [Typed Execution Plan]
+                       │
+                       ▼
+            [Isolated Sandbox Executor]
+                       │
+                       ▼
+              [Evidence Evaluation]
+              ├── Confirmed ──> Continue / Flag Candidate ──> Submit ──> Distill Knowledge ──> Cleanup
+              ├── Rejected  ──> Pivot Hypothesis
+              └── Inconclusive ──> Refine Experiment
 ```
 
-### Bước 1: Tiếp nhận & Đăng nhập (`./ctf auto`)
-- Ghi cấu hình vào `.env` và cào toàn bộ bài tập.
-- Đồng bộ bài tập vào thư mục làm việc của `v0_ctf_knowledge/work/<category>/<chall_name>/`.
-- Báo cáo cho User: Số lượng challenge, điểm số, danh mục.
+### Bước 1: Đồng Bộ & Nạp Bài Lazy (`ctf pull` / `ctf auto`)
+- Metadata lưu trong cache `.runtime/<event>/event.json`.
+- File đính kèm chỉ tải khi bài thi được kích hoạt giải.
 
-### Bước 2: Tự Động Khởi Tạo State & Tham Vấn Strategic Advisor (`./ctf advisor`)
-- Chạy `./ctf advisor init <ID>`:
-  1. Tự động bóc tách chữ ký tĩnh, checksec, strings chắt lọc vào `.advisor/findings.md`.
-  2. Tạo tracker giả thuyết `.advisor/hypotheses.md` và log thực nghiệm `.advisor/experiments.jsonl`.
-- Chạy `./ctf advisor consult <ID>`:
-  1. Tổng hợp **Ngữ Cảnh 4 Tầng** (L0 Đề bài, L1 Findings, L2 Hypotheses, L3 Code snippets).
-  2. Gửi sang ChatGPT Web qua **Oracle CLI** (`--engine browser --browser-attach-running`).
-  3. ChatGPT Web trả về bản định hướng 6 phần (`ASSESSMENT`, `HYPOTHESES`, `NEXT_ACTIONS`...) lưu tại `.advisor/guidance.md`.
-  *(Nếu máy chưa bật debug port, hệ thống tự kích hoạt Fallback đẩy prompt vào Clipboard qua xclip).*
+### Bước 2: Deep Fingerprint & Truy Xuất Tri Thức Ngoại Vi
+- Bóc tách kiến trúc, binary mitigations (checksec), web/crypto primitives qua `FingerprintEngine`.
+- Tự động truy vấn Thẻ Tri Thức từ repo ngoại vi `DangGPhuc/v0_ctf_knowledge` qua GitHub Contents API.
 
-### Bước 3: Thực Thi Kỹ Thuật (Anti-IDE / OpenCode Executor)
-- Executor đọc `NEXT_ACTIONS` từ `.advisor/guidance.md` và phối hợp với [v0_ctf_knowledge](https://github.com/DangGPhuc/v0_ctf_knowledge):
-  - **Dynamic Container**: Gọi `./ctf instance start <ID>` lấy IP:PORT.
-  - **Reverse Engineering**: Dùng IDA Pro MCP server (`ida_decompile`, `ida_get_xrefs`).
-  - **Pwn / Crypto / Web**: Viết script micro-PoC trong `work/`, hoàn thiện exploit trong `work/solve.py`.
-- **Báo cáo vòng lặp sau mỗi thực nghiệm**:
-  ```bash
-  ./ctf advisor report <ID> -e EXP-001 -a "<thao_tac>" -o "<hien_tuong>" -s CONFIRMED -d "<phan_tich>"
-  ```
-  Oracle sẽ tự động gửi `--followup` vào session để nhận chỉ dẫn vòng tiếp theo.
+### Bước 3: Tham Vấn Cố Vấn Chiến Lược (`Strategic Advisor`)
+- Tổng hợp `StateCapsule` (Dữ kiện đã xác minh, giả thuyết active, kết quả thực nghiệm gần nhất, hints từ bài tương tự).
+- Advisor trả về bản định hướng kèm **khối JSON `execution_plan` định kiểu** bắt buộc.
+- CẤM chạy trực tiếp văn bản tự do; chỉ thực thi các `ExecutionAction` đã qua kiểm định policy.
 
-### Bước 3b: Phá Vỡ Bế Tắc Bằng Thẩm Định Chéo PAL MCP (Escalation)
-- Nếu một hướng thử nghiệm thất bại 2 lần liên tiếp (`budget: 2 fails`):
-  - Trạng thái bài chuyển sang `STALLED`.
-  - Executor kích hoạt thẩm định chéo:
-    ```bash
-    ./ctf advisor escalate <ID> -r "<mô tả điểm nghẽn và giả định nghi ngờ sai>"
-    ```
-  - PAL MCP (`challenge`, `thinkdeep`) đưa ra góc nhìn phản biện độc lập và tự động nạp kết quả vào phiên làm việc của Strategic Advisor để đổi mới chiến lược!
+### Bước 4: Thực Thi Sandbox Cách Ly (`ContainerExecutor` / `RestrictedLocalExecutor`)
+- **Container Sandbox**: Chạy `--cap-drop=ALL`, `--security-opt=no-new-privileges`, `--network=none` mặc định.
+- **Ranh giới Artifacts**:
+  - `input:<file>`: Mount `/input:ro` (chỉ đọc, tuyệt đối không chỉnh sửa binary gốc).
+  - `work:<file>`: Mount `/work:rw` (chứa `solve.py` / `solve.sage`, micro-PoCs, logs).
+- **Toolchain Routing**: Điều phối image phù hợp với từng category (`pwn`, `crypto-sage`, `web`, `rev`).
 
-### Bước 4: Chạy Exploit & Thu hoạch Flag
-- Chạy `python3 work/solve.py` (hoặc thông qua `ContainerExecutor`) -> bắt cờ khớp regex format (mặc định `FLAG{...}`).
-- Ghi cờ vào `work/flag.txt`.
-
-### Bước 5: Nộp Flag Tức Thì (`ctf_submit_right_away`)
-- Thực thi ngay:
-  ```bash
-  ./ctf submit --id <ID> -f "<FLAG>"
-  ```
-- **Nếu thành công**: Cập nhật `solved` trong `challenges.json`, chúc mừng và chuyển ngay sang bài tiếp theo!
-- **Nếu thất bại (Rate limit / Lỗi xác thực)**: Bật khung cảnh báo to rõ `🚨 MANUAL INTERVENTION REQUIRED`, in chuỗi Flag để User **copy và nộp tay trên trình duyệt web**.
+### Bước 5: Đánh Giá Bằng Chứng, Nộp Flag & Chắt Lọc Tri Thức
+- Bắt cờ khớp format regex -> Nộp flag tức thì qua `ctf submit`.
+- Sau khi giải thành công:
+  1. Trích xuất Winning Path từ `DiscoveryTree`.
+  2. Tạo ứng viên Thẻ Tri Thức (không chứa plaintext flag hay rác nhị phân).
+  3. Dọn dẹp sạch sẽ ephemeral runtime `.runtime/<event>/challenges/<id>/`.
 
 ---
 
-## 3. Quy Tắc Tổ Chức Workspace 4 Tầng Cho Agent
+## 3. Cấu Trúc Ephemeral Runtime Bắt Buộc
 
-Khi giải một bài tập, Agent **BẮT BUỘC** tuân thủ cấu trúc 4 thư mục:
+Khi giải một bài tập, Agent tuân thủ cấu trúc tạm thời trong `.runtime/`:
 
 ```text
-<Workspace>/<Category>/<Challenge_Name>/
-├── challenge/       # NGUYÊN BẢN: Đề bài (README.md), metadata.json, file đính kèm (chall, zip...)
-├── script/          # THỬ NGHIỆM: chatgpt_prompt.md, chatgpt_guidance.md, scripts nháp, fuzzing
-├── solver/          # CHÍNH THỨC: solve.py chuẩn hoàn chỉnh để lấy flag
-└── writeup/         # BÁO CÁO: Ghi chú phân tích lỗ hổng và các bước khai thác
+.runtime/<event_id>/challenges/<challenge_id>/
+├── input/       # READ-ONLY: File đính kèm gốc từ platform (chall.zip, vuln, elf...)
+├── work/        # READ-WRITE: solve.py, solve.sage, micro-PoC scripts, outputs
+└── .advisor/    # STATE MACHINE: state.json, guidance.md, latest_prompt.md
 ```
 
----
-
-## 4. Tích Hợp Sâu Kho Kỹ Năng [v0_ctf_knowledge](https://github.com/DangGPhuc/v0_ctf_knowledge)
-
-Toàn bộ bản sao vật lý của `v0_ctf_knowledge` đã nằm tại `v0_ctf_knowledge`:
-- **Pwn**: [.agents/skills/ctf-pwn/](file:///home/kali/Documents/cyber_thread/.agents/skills/ctf-pwn/) (Heap, ROP, Stack, Kernel)
-- **Rev**: [.agents/skills/ctf-rev/](file:///home/kali/Documents/cyber_thread/.agents/skills/ctf-rev/) (IDA Pro MCP Playbook, Z3 Solver, Angr)
-- **Web**: [.agents/skills/ctf-web/](file:///home/kali/Documents/cyber_thread/.agents/skills/ctf-web/) (Blind SQLi, SSTI, Deserialization, Prototype Pollution)
-- **Crypto**: [.agents/skills/ctf-crypto/](file:///home/kali/Documents/cyber_thread/.agents/skills/ctf-crypto/) (RSA attacks, Lattice LLL, ECC, PRNG)
-- **Forensics**: [.agents/skills/ctf-forensics/](file:///home/kali/Documents/cyber_thread/.agents/skills/ctf-forensics/) (PCAP, Volatility, Stego)
-- **Audit**: [.agents/skills/ctf-audit/](file:///home/kali/Documents/cyber_thread/.agents/skills/ctf-audit/) (Whitebox triage, ReAct reasoning protocol)
+Toàn bộ thư mục `.runtime/` là tạm thời (ephemeral) và được dọn dẹp sạch sẽ sau khi giải xong bài.

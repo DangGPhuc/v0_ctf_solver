@@ -143,11 +143,12 @@ class DownloadManager:
                 full_redirect_url = urljoin(url, redirect_target)
                 if self.is_same_origin(full_redirect_url):
                     # Redirect stays on same origin: retain auth
-                    ok = self._stream_download(self.auth_client, full_redirect_url)
+                    ok = self._stream_download(self.auth_client, full_redirect_url, dest_file)
                 else:
                     # Cross-origin redirect: STRIP CREDENTIALS and use anonymous client
-                    ok = self._stream_download(self.anon_client, full_redirect_url)
+                    ok = self._stream_download(self.anon_client, full_redirect_url, dest_file)
                 return dest_file if ok else None
+
 
             if resp.status_code == 200:
                 with open(dest_file, "wb") as f:

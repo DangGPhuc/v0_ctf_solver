@@ -46,9 +46,11 @@ class RuntimeManager:
                   └── state.json   (lightweight state machine)
     """
 
-    def __init__(self, base_dir: Optional[Path] = None):
-        if base_dir:
-            self.base_dir = Path(base_dir).resolve()
+    def __init__(self, base_dir: Optional[Path] = None, runtime_root: Optional[Path] = None):
+        target_dir = base_dir or runtime_root
+        if target_dir:
+            self.base_dir = Path(target_dir).resolve()
+
         else:
             env_override = os.environ.get("CTF_RUNTIME_DIR")
             if env_override:
@@ -188,19 +190,20 @@ class RuntimeManager:
             download_fn(input_dir)
 
         # Generate standard solver template if not present
-        solve_py = work_dir / "solve.py"
-        if not solve_py.is_file():
-            self._create_default_solve_script(solve_py, challenge)
-
-        return cpath
-
-    def _create_default_solve_script(self, target: Path, challenge: Challenge):
         cat = (challenge.category or "misc").lower()
         tpl_dir = Path(__file__).resolve().parent.parent / "execution" / "templates"
         tpl_path = tpl_dir / f"solve_{cat}.py"
+        target_script = work_dir / "solve.py"
         if not tpl_path.is_file() and cat == "crypto":
             tpl_path = tpl_dir / "solve_crypto.sage"
+            target_script = work_dir / "solve.sage"
 
+        if not target_script.is_file() and not (work_dir / "solve.py").is_file():
+            self._create_default_solve_script(target_script, tpl_path, challenge)
+
+        return cpath
+
+    def _create_default_solve_script(self, target: Path, tpl_path: Path, challenge: Challenge):
         host = ""
         port = ""
         conn = challenge.connection_info or ""
@@ -218,17 +221,21 @@ class RuntimeManager:
 
         if tpl_path.is_file():
             content = tpl_path.read_text(encoding="utf-8")
-            header = f"#!/usr/bin/env python3\n# Solver for: {challenge.name} ({challenge.category})\n# Connection: {challenge.connection_info or 'N/A'}\n"
+            is_sage = tpl_path.suffix == ".sage"
+            shebang = "#!/usr/bin/env sage\n" if is_sage else "#!/usr/bin/env python3\n"
+            header = f"{shebang}# Solver for: {challenge.name} ({challenge.category})\n# Connection: {challenge.connection_info or 'N/A'}\n"
             if host:
                 header += f'HOST = "{host}"\n'
             if port:
                 header += f'PORT = {port}\n'
             header += f'TARGET_URL = "{conn if conn.startswith("http") else ""}"\n\n'
-            if content.startswith("#!/usr/bin/env python3\n"):
-                content = content[len("#!/usr/bin/env python3\n"):]
+            for prefix in ["#!/usr/bin/env python3\n", "#!/usr/bin/env sage\n"]:
+                if content.startswith(prefix):
+                    content = content[len(prefix):]
             content = header + content
             target.write_text(content, encoding="utf-8")
             return
+
 
         content = f"""#!/usr/bin/env python3
 # Solver for: {challenge.name} ({challenge.category})

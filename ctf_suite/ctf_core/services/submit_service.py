@@ -19,9 +19,10 @@ console = Console()
 class SubmitService:
     def __init__(
         self,
-        platform_url: str,
+        platform_url: Optional[str] = None,
         session_cookie: Optional[str] = None,
         api_token: Optional[str] = None,
+
         flag_format: Optional[str] = None,
         platform_type: Optional[str] = None,
         runtime_manager: Optional[RuntimeManager] = None,
@@ -160,8 +161,12 @@ class SubmitService:
                     fcntl.flock(lf.fileno(), fcntl.LOCK_UN)
         except Exception:
             pass
+    def submit_right_away(self, challenge_id: Any, flag: str, strict: bool = False) -> SubmitResult:
+        """Alias for submit() adhering to the immediate submission protocol."""
+        return self.submit(challenge_id=challenge_id, flag=flag, strict=strict)
 
     def submit(self, challenge_id: Any, flag: str, strict: bool = False) -> SubmitResult:
+
         flag = flag.strip()
         chall_name = f"ID: {challenge_id}"
         
@@ -200,8 +205,20 @@ class SubmitService:
             )
 
         # 3. Submit to platform
-        result = self.platform.submit_flag(challenge_id, flag)
-        result.challenge_name = chall_name
+        raw_res = self.platform.submit_flag(challenge_id, flag)
+        if isinstance(raw_res, dict):
+            v_val = raw_res.get("status", raw_res.get("verdict", "unknown"))
+            result = SubmitResult(
+                verdict=v_val,
+                message=raw_res.get("message", ""),
+                challenge_id=challenge_id,
+                challenge_name=chall_name,
+                flag=flag,
+            )
+        else:
+            result = raw_res
+            result.challenge_name = chall_name
+
 
         # 4. Record to ledger
         self._record_submission(challenge_id, flag, result)

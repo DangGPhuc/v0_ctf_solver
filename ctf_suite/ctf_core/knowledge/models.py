@@ -39,3 +39,26 @@ class KnowledgeDocument(BaseModel):
     @property
     def content(self) -> str:
         return self.content_raw
+
+
+class RetrievedKnowledgeContext(BaseModel):
+    id: str
+    title: str
+    category: str
+    summary: str = ""
+    technique_steps: List[str] = Field(default_factory=list)
+    source: str = "v0_ctf_knowledge"
+    confidence: float = 1.0
+
+    @classmethod
+    def from_doc(cls, doc: KnowledgeDocument, confidence: float = 1.0) -> "RetrievedKnowledgeContext":
+        return cls(
+            id=doc.id,
+            title=doc.title,
+            category=doc.category,
+            summary=doc.summary,
+            technique_steps=list(doc.technique_steps),
+            source=doc.id,
+            confidence=confidence,
+        )
+

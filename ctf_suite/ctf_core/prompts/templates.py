@@ -106,5 +106,23 @@ class CTFTemplates:
             f"- Lệnh chính xác Executor cần chạy (breakpoint GDB, micro-PoC Python, offsets).\n\n"
             f"### 6. STOP CONDITIONS & BRANCHES TO PRUNE\n"
             f"- Điều kiện Executor phải dừng lại báo cáo.\n"
-            f"- Nhánh nào cần hủy bỏ ngay lập tức để tiết kiệm tài nguyên.\n"
+            f"- Nhánh nào cần hủy bỏ ngay lập tức để tiết kiệm tài nguyên.\n\n"
+            f"## 6. MACHINE-READABLE EXECUTION PLAN (MANDATORY JSON BLOCK)\n"
+            f"Cuối phản hồi, BẮT BUỘC đính kèm khối JSON định kiểu (Typed Execution Plan) để Executor tự động thực thi trong sandbox:\n"
+            f"```json\n"
+            f"{{\n"
+            f'  "assessment": "<tóm tắt 1 câu>",\n'
+            f'  "hypotheses": [\n'
+            f'    {{"id": "H1", "statement": "<giả thuyết chính>", "confidence": 0.8, "rationale": "<lý do>"}}\n'
+            f'  ],\n'
+            f'  "execution_plan": [\n'
+            f'    {{"kind": "analysis_tool", "tool": "checksec", "argv": ["--file", "input:vuln"], "timeout": 15}},\n'
+            f'    {{"kind": "run_solver", "path": "solve.py", "argv": ["python3", "solve.py"], "timeout": 60}}\n'
+            f'  ],\n'
+            f'  "requested_evidence": ["<bằng chứng mong đợi>"],\n'
+            f'  "stop_conditions": ["<điều kiện dừng>"]\n'
+            f"}}\n"
+            f"```\n"
+            f"Supported kinds: run_solver, run_python_file, run_sage_file, run_binary, analysis_tool, read_file, list_files.\n"
         )
+

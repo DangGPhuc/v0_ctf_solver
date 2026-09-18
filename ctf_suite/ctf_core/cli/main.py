@@ -137,13 +137,14 @@ def pull_cmd(
     puller = PullService(
         output_dir=Path.cwd(),
         category=category,
-        platform_url=target_url,
+        url=target_url,
         session_cookie=cookie or cfg.session_cookie,
         api_token=token or cfg.api_token,
         preload_all=all_challs,
     )
-    result = puller.pull()
-    console.print(f"[bold green]✔ Đã đồng bộ thành công metadata của {len(result.get('challenges', []))} bài thi vào runtime cache![/bold green]")
+    result = puller.execute()
+    challs = result.challenges if hasattr(result, "challenges") else result.get("challenges", [])
+    console.print(f"[bold green]✔ Đã đồng bộ thành công metadata của {len(challs)} bài thi vào runtime cache![/bold green]")
 
 
 @app.command(name="auto")
@@ -151,6 +152,8 @@ def auto_cmd(
     category: Optional[str] = typer.Option(None, "--category", "-C", help="Chỉ giải bài thuộc category cụ thể"),
     max_iter: int = typer.Option(5, "--max-iter", "-m", help="Số vòng lặp ReAct tối đa cho mỗi bài"),
     executor_mode: str = typer.Option("auto", "--executor", "-e", help="Chế độ thực thi: 'auto', 'container', 'restricted', 'unsafe-local'"),
+    allow_fallback: bool = typer.Option(False, "--allow-local-fallback", help="Cho phép chạy trên host nếu không có container engine (nguy hiểm)"),
+    allow_net: bool = typer.Option(False, "--allow-network", help="Cho phép container truy cập network bridge cho remote challenges"),
     url: Optional[str] = typer.Option(None, "--url", "-u", help="Platform URL"),
     cookie: Optional[str] = typer.Option(None, "--cookie", "-c", help="Session cookie"),
     token: Optional[str] = typer.Option(None, "--token", "-t", help="API token"),
@@ -172,8 +175,12 @@ def auto_cmd(
         api_token=token,
         max_iterations_per_chall=max_iter,
         cleanup_policy="immediate",
+        executor_mode=executor_mode,
+        allow_local_fallback=allow_fallback,
+        allow_network=allow_net,
     )
-    orchestrator.run()
+    orchestrator.run_tournament_loop()
+
 
 
 @app.command(name="solve")
@@ -202,6 +209,12 @@ def solve_cmd(
         allow_local_fallback=allow_fallback,
         allow_network=allow_net,
     )
+    rt = RuntimeManager()
+    state = rt.read_challenge_state(orchestrator.event_id, challenge_id)
+    if state and state.get("solved_by_me"):
+        console.print(f"[bold green]✔ ALREADY_SOLVED: Bài ID {challenge_id} đã được giải quyết thành công trước đó.[/bold green]")
+        return
+
     challs = orchestrator.sync_challenges(download_attachments=False)
     target = None
     for c in challs:
@@ -210,18 +223,30 @@ def solve_cmd(
             break
 
     if not target:
-        target = {
-            "id": challenge_id,
-            "name": f"Challenge_{challenge_id}",
-            "category": "Misc",
-            "points": 100,
-        }
+        # Check if already materialized in runtime for RUNTIME_ONLY_RESUME
+        chall_path = rt.challenge_path(orchestrator.event_id, challenge_id)
+        if chall_path.is_dir() and state:
+            console.print(f"[cyan]⚡ RUNTIME_ONLY_RESUME: Tiếp tục giải bài ID {challenge_id} từ ephemeral runtime đã dựng sẵn.[/cyan]")
+            target = {
+                "id": challenge_id,
+                "name": state.get("name") or state.get("challenge_name") or f"Challenge_{challenge_id}",
+                "category": state.get("category", "Misc"),
+                "points": state.get("points", 0),
+                "connection_info": state.get("connection_info", ""),
+            }
+        else:
+            if orchestrator.platform and hasattr(orchestrator.platform, "authenticated") and not orchestrator.platform.authenticated:
+                console.print(f"[bold red]❌ AUTH_FAILED: Không thể xác thực với CTF Platform để tìm bài ID '{challenge_id}'.[/bold red]")
+            else:
+                console.print(f"[bold red]❌ NOT_FOUND: Bài ID '{challenge_id}' không tồn tại trên platform và chưa được dựng trong runtime.[/bold red]")
+            raise typer.Exit(code=1)
 
     solved = orchestrator.execute_challenge_cycle(target)
     if solved:
         console.print(f"[bold green]✔ Bài ID {challenge_id} đã được giải quyết thành công![/bold green]")
     else:
         console.print(f"[yellow]⏳ Bài ID {challenge_id} chưa giải xong hoặc đang chờ chỉ dẫn thủ công.[/yellow]")
+
 
 
 @app.command(name="status")

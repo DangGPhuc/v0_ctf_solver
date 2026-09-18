@@ -97,29 +97,53 @@ class PromptCompiler:
             except Exception:
                 pass
 
-        # 4. Trích xuất Retrieved Hints từ Thẻ Tri Thức tương tự
+        # 4. Trích xuất Retrieved Hints từ Thẻ Tri Thức tương tự (RetrievedKnowledgeContext hoặc dict)
         retrieved_hints = []
         if retrieved_cards:
             for c in retrieved_cards:
-                c_content = c.get("content", "")
-                c_lines = c_content.splitlines()
-                for cl in c_lines:
-                    if cl.strip().startswith("- **") or cl.strip().startswith("1."):
+                source_name = getattr(c, "title", None) or (c.get("title") if isinstance(c, dict) else None) or (c.get("name") if isinstance(c, dict) else "KnowledgeCard")
+                # Ưu tiên lấy technique_steps
+                tech_steps = getattr(c, "technique_steps", None) or (c.get("technique_steps") if isinstance(c, dict) else None) or (c.get("technique") if isinstance(c, dict) else None) or []
+                if tech_steps:
+                    for step in tech_steps[:2]:
                         retrieved_hints.append({
-                            "source": c.get("name", "Card"),
-                            "hint": cl.strip()[:100],
+                            "source": source_name,
+                            "hint": step[:150],
                         })
-                        if len(retrieved_hints) >= 2:
-                            break
+                else:
+                    # Fallback vào summary hoặc content lines
+                    summary = getattr(c, "summary", None) or (c.get("summary") if isinstance(c, dict) else "")
+                    if summary:
+                        retrieved_hints.append({
+                            "source": source_name,
+                            "hint": summary[:150],
+                        })
+                    else:
+                        c_content = getattr(c, "content", None) or (c.get("content", "") if isinstance(c, dict) else "")
+                        for cl in c_content.splitlines():
+                            if cl.strip().startswith("- **") or cl.strip().startswith("1."):
+                                retrieved_hints.append({
+                                    "source": source_name,
+                                    "hint": cl.strip()[:150],
+                                })
+                                if len(retrieved_hints) >= 2:
+                                    break
+
+        active_h_val = state.get("active_hypothesis")
+        active_h_id = state.get("active_hypothesis_id") or (active_h_val if isinstance(active_h_val, str) and active_h_val.startswith("H") else None)
+        active_h_stmt = state.get("active_hypothesis_statement") or (active_h_val if isinstance(active_h_val, str) and not active_h_val.startswith("H") else None)
 
         return StateCapsule(
             challenge_id=str(chall_id),
             challenge_name=chall_name,
             category=category,
             confirmed_facts=confirmed_facts,
-            active_hypothesis=state.get("active_hypothesis"),
+            active_hypothesis=active_h_stmt or active_h_val,
+            active_hypothesis_id=active_h_id,
+            active_hypothesis_statement=active_h_stmt,
             rejected_hypotheses=rejected_hypotheses,
             recent_progress=recent_progress,
             unresolved_questions=[],
             retrieved_hints=retrieved_hints,
         )
+

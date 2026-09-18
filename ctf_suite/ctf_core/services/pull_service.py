@@ -23,7 +23,7 @@ class PullService:
     """
     def __init__(
         self,
-        url: str,
+        url: Optional[str] = None,
         output_dir: Optional[Path] = None,
         session_cookie: Optional[str] = None,
         api_token: Optional[str] = None,
@@ -33,14 +33,19 @@ class PullService:
         preload_all: bool = False,
         runtime_manager: Optional[RuntimeManager] = None,
         event_id: Optional[str] = None,
+        platform_url: Optional[str] = None,
     ):
-        self.url = url.rstrip("/")
+        target_url = url or platform_url
+        if not target_url:
+            raise ValueError("Either url or platform_url must be provided.")
+        self.url = target_url.rstrip("/")
         self.session_cookie = session_cookie
         self.api_token = api_token
         self.platform_type = platform_type or detect_platform_type(self.url, self.session_cookie)
-        self.download_attachments = download_attachments
-        self.category = category.strip() if category else None
         self.preload_all = preload_all
+        # When preloading all, download attachments unless explicitly disabled
+        self.download_attachments = download_attachments or preload_all
+        self.category = category.strip() if category else None
         
         self.runtime_manager = runtime_manager or RuntimeManager()
         # Derive event_id from url host or provided id
@@ -62,6 +67,11 @@ class PullService:
             session_cookie=self.session_cookie,
             api_token=self.api_token
         )
+
+    def pull(self) -> CTFInfo:
+        """Alias for execute() to ensure canonical compatibility."""
+        return self.execute()
+
 
     def execute(self) -> CTFInfo:
         console.print(f"[bold cyan]⚡ Connecting to CTF Platform:[/bold cyan] {self.url}")

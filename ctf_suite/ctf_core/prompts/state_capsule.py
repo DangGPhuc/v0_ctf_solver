@@ -16,6 +16,8 @@ class StateCapsule:
     category: str
     confirmed_facts: List[str] = field(default_factory=list)
     active_hypothesis: Optional[str] = None
+    active_hypothesis_id: Optional[str] = None
+    active_hypothesis_statement: Optional[str] = None
     rejected_hypotheses: List[Dict[str, str]] = field(default_factory=list)
     recent_progress: List[Dict[str, str]] = field(default_factory=list)
     unresolved_questions: List[str] = field(default_factory=list)
@@ -36,7 +38,11 @@ class StateCapsule:
             sections.append("- *Chưa có dữ kiện xác minh.*")
 
         # 2. Active Hypothesis
-        sections.append(f"\n#### 2. Active Hypothesis (Giả thuyết đang tập trung):\n- **{self.active_hypothesis or 'Chưa xác định'}**")
+        active_display = self.active_hypothesis_statement or self.active_hypothesis or "Chưa xác định"
+        if self.active_hypothesis_id and self.active_hypothesis_id not in active_display:
+            active_display = f"[{self.active_hypothesis_id}] {active_display}"
+        sections.append(f"\n#### 2. Active Hypothesis (Giả thuyết đang tập trung):\n- **{active_display}**")
+
 
         # 3. Rejected Hypotheses
         sections.append("\n#### 3. Rejected Hypotheses (Các hướng ĐÃ THỬ VÀ THẤT BẠI - TUYỆT ĐỐI KHÔNG LẶP LẠI):")

@@ -8,8 +8,19 @@ from rich.console import Console
 from ..models import AdvisorGuidance, ExecutionAction, ExecutionResult
 from .evaluator import ExecutionResultEvaluator
 from .restricted_executor import RestrictedLocalExecutor
+from .artifacts import ArtifactResolver, ArtifactResolutionError
 
 console = Console()
+
+DEFAULT_CATEGORY_IMAGES = {
+    "base": "python:3.11-slim",
+    "pwn": "ghcr.io/danggphuc/ctf-pwn:latest",
+    "web": "python:3.11-slim",
+    "crypto": "python:3.11-slim",
+    "crypto-sage": "sagemath/sagemath:latest",
+    "rev": "python:3.11-slim",
+    "forensics": "python:3.11-slim",
+}
 
 class ContainerExecutor:
     """
@@ -40,14 +51,17 @@ class ContainerExecutor:
         allow_network: bool = False,
         network_profile: str = "none",
         allow_local_fallback: bool = False,
+        category_images: Optional[Dict[str, str]] = None,
     ):
         self.flag_format_regex = flag_format or flag_format_regex
         self.image = image
+        self.category_images = category_images or DEFAULT_CATEGORY_IMAGES
         self.allow_network = allow_network
         self.network_profile = "bridge" if allow_network else network_profile
         self.allow_local_fallback = allow_local_fallback
         self.fallback = RestrictedLocalExecutor(flag_format_regex=self.flag_format_regex)
         self.engine = self._detect_engine()
+
 
     def _detect_engine(self) -> Optional[str]:
         for eng in ["docker", "podman"]:
@@ -121,41 +135,84 @@ class ContainerExecutor:
                 if not any(bad in k.upper() for bad in ["TOKEN", "COOKIE", "SECRET", "AUTH", "PASS", "KEY"]):
                     cmd.extend(["-e", f"{k}={v}"])
 
+        # Select appropriate container image
+        cat = (challenge_context.get("category") or "base").lower()
+        selected_image = self.category_images.get(cat, self.image)
+
         # Determine executable command inside container
         actions_performed: List[str] = []
+        sub_cmd: List[str] = []
+
         if guidance.execution_plan:
             first_action = guidance.execution_plan[0]
-            if first_action.kind in ["run_solver", "run_python_file"]:
-                script_name = first_action.path or "solve.py"
-                target_script = (work_dir / script_name).resolve()
-                if not target_script.is_relative_to(work_dir) or not target_script.is_file():
-                    return ExecutionResult(
-                        experiment_id=experiment_id,
-                        status="ERROR",
-                        return_code=-1,
-                        actions=[f"resolve_script:{script_name}"],
-                        observed=f"Target script {script_name} is outside work_dir or missing",
-                        evidence=[],
-                        flag_candidates=[],
-                    )
-                sub_cmd = ["python3", script_name]
-                actions_performed.append(f"{self.engine}:python3 {script_name}")
-            elif first_action.kind == "list_files":
+            kind = first_action.kind
+
+            if kind in ["run_solver", "run_python_file"]:
+                container_script = ArtifactResolver.resolve_container(
+                    first_action.path or "solve.py", input_dir, work_dir
+                )
+                sub_cmd = ["python3", container_script]
+                if first_action.argv and len(first_action.argv) > 1:
+                    clean_args = ArtifactResolver.translate_argv(first_action.argv[1:], input_dir, work_dir, in_container=True)
+                    sub_cmd.extend(clean_args)
+                actions_performed.append(f"{self.engine}:python3 {container_script}")
+
+            elif kind == "run_sage_file":
+                selected_image = self.category_images.get("crypto-sage", "sagemath/sagemath:latest")
+                container_script = ArtifactResolver.resolve_container(
+                    first_action.path or "solve.sage", input_dir, work_dir
+                )
+                sub_cmd = ["sage", container_script]
+                if first_action.argv and len(first_action.argv) > 1:
+                    clean_args = ArtifactResolver.translate_argv(first_action.argv[1:], input_dir, work_dir, in_container=True)
+                    sub_cmd.extend(clean_args)
+                actions_performed.append(f"{self.engine}:sage {container_script}")
+
+            elif kind == "run_binary":
+                bin_target = first_action.path or (first_action.argv[0] if first_action.argv else "vuln")
+                container_bin = ArtifactResolver.resolve_container(bin_target, input_dir, work_dir)
+                sub_cmd = [container_bin]
+                if first_action.argv and len(first_action.argv) > 1:
+                    clean_args = ArtifactResolver.translate_argv(first_action.argv[1:], input_dir, work_dir, in_container=True)
+                    sub_cmd.extend(clean_args)
+                actions_performed.append(f"{self.engine}:{container_bin}")
+
+            elif kind == "read_file":
+                read_target = first_action.path or (first_action.argv[0] if first_action.argv else "flag.txt")
+                container_file = ArtifactResolver.resolve_container(read_target, input_dir, work_dir)
+                sub_cmd = ["cat", container_file]
+                actions_performed.append(f"{self.engine}:cat {container_file}")
+
+            elif kind == "list_files":
                 sub_cmd = ["ls", "-la"]
                 actions_performed.append(f"{self.engine}:ls -la")
+
+            elif kind == "analysis_tool":
+                tool_name = first_action.tool or (first_action.argv[0] if first_action.argv else "checksec")
+                raw_args = first_action.argv[1:] if (first_action.argv and first_action.argv[0] == tool_name) else (first_action.argv or [])
+                clean_args = ArtifactResolver.translate_argv(raw_args, input_dir, work_dir, in_container=True)
+                sub_cmd = [tool_name, *clean_args]
+                actions_performed.append(f"{self.engine}:{tool_name}")
+
             else:
                 sub_cmd = ["python3", "solve.py"]
                 actions_performed.append(f"{self.engine}:python3 solve.py")
         else:
+            solve_sage = work_dir / "solve.sage"
             solve_script = work_dir / "solve.py"
-            if solve_script.is_file():
-                sub_cmd = ["python3", "solve.py"]
-                actions_performed.append(f"{self.engine}:python3 solve.py")
+            if solve_sage.is_file():
+                selected_image = self.category_images.get("crypto-sage", "sagemath/sagemath:latest")
+                sub_cmd = ["sage", "/work/solve.sage"]
+                actions_performed.append(f"{self.engine}:sage /work/solve.sage")
+            elif solve_script.is_file():
+                sub_cmd = ["python3", "/work/solve.py"]
+                actions_performed.append(f"{self.engine}:python3 /work/solve.py")
             else:
                 sub_cmd = ["ls", "-la"]
                 actions_performed.append(f"{self.engine}:ls -la")
 
-        cmd.extend([self.image, *sub_cmd])
+        cmd.extend([selected_image, *sub_cmd])
+
 
         console.print(f"[cyan]🐳 [ContainerExecutor] Running isolated execution in {self.engine} (network={net_mode})...[/cyan]")
         try:

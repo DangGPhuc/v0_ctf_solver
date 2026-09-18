@@ -30,6 +30,11 @@ class SubmitResult(BaseModel):
     points: Optional[int] = None
     timestamp: str = Field(default_factory=lambda: datetime.now().isoformat())
 
+    @property
+    def status(self) -> str:
+        return str(self.verdict)
+
+
 class Challenge(BaseModel):
     id: Any
     name: str
@@ -80,6 +85,8 @@ class AdvisorGuidance(BaseModel):
     requested_evidence: List[str] = Field(default_factory=list)
     stop_conditions: List[str] = Field(default_factory=list)
     raw_text: Optional[str] = None
+    validation_error: Optional[str] = None
+    is_structured: bool = False
 
 class AdvisorResult(BaseModel):
     status: Literal[
@@ -96,6 +103,7 @@ class ExecutionAction(BaseModel):
     kind: Literal[
         "run_solver",
         "run_python_file",
+        "run_sage_file",
         "run_binary",
         "read_file",
         "list_files",
@@ -105,6 +113,7 @@ class ExecutionAction(BaseModel):
     path: Optional[str] = None
     tool: Optional[str] = None
     timeout: int = 60
+
 
 class ExecutionResult(BaseModel):
     experiment_id: str
