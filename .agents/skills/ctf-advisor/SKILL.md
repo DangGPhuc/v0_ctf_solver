@@ -1,6 +1,6 @@
 ---
 name: ctf-advisor
-description: CTF Dual-Agent Collaboration Protocol (Executor ↔ Advisor). Orchestrates iterative solving between Anti-IDE/OpenCode (Executor) and ChatGPT Web (Strategic Advisor via Oracle CLI/Browser bridge), utilizing BrowserSkill for web actuation and PAL MCP for consensus/escalation.
+description: CTF Dual-Agent Collaboration Protocol (Executor ↔ Advisor). Orchestrates iterative solving between Anti-IDE/OpenCode (Executor) and ChatGPT Web (Strategic Advisor via Oracle CLI/Browser bridge), utilizing BrowserSkill for web actuation and Strategic Escalation (Assumption Challenge & Reframe).
 argument-hint: "[init|consult|report|escalate|status] [CHALLENGE_ID] [options]"
 ---
 
@@ -10,7 +10,7 @@ Quy chuẩn kỹ năng tác chiến phối hợp 2 AI Agent:
 - **Executor (Anti-IDE / OpenCode)**: Agent thực thi tại chỗ (Terminal, GDB, IDA Pro MCP, Python runtime, file system).
 - **Strategic Advisor (ChatGPT Web)**: Cố vấn chiến lược phân tích lỗ hổng gốc, đề xuất giả thuyết và định hướng thực nghiệm thông qua cầu nối **Oracle CLI/Browser Bridge**.
 - **Browser Actuator (BrowserSkill)**: Thực thi duyệt web ngoại vi (tải challenge, tương tác portal thi đấu có auth).
-- **Escalation & Consensus Layer (PAL MCP)**: Hội đồng thẩm định độc lập khi ChatGPT Web rơi vào bế tắc (tunnel vision).
+- **Strategic Escalation Layer**: Cơ chế phản biện và phá vỡ bế tắc giả định (Assumption Challenge & Reframe) khi Advisor rơi vào bế tắc (tunnel vision). (PAL MCP đa mô hình là giao diện mở rộng tương lai).
 
 ---
 
@@ -21,7 +21,7 @@ Quy chuẩn kỹ năng tác chiến phối hợp 2 AI Agent:
 | `./ctf advisor init <ID>` | Khởi tạo | Tạo cấu trúc `.advisor/` bên trong thư mục challenge (`state.json`, `findings.md`, `hypotheses.md`, `experiments.jsonl`, `tree.json`). |
 | `./ctf advisor consult <ID>` | Tham vấn Vòng 1 / Tiếp theo | Gom ngữ cảnh 4 tầng (L0-L3), gửi prompt sang ChatGPT Web qua Oracle (`--engine browser --browser-attach-running`), bắt phản hồi và trích xuất `NEXT_ACTIONS`. |
 | `./ctf advisor report <ID> -e <EXP_ID> -o "<OBSERVED>" -s <CONFIRMED\|REJECTED>` | Báo cáo kết quả | Đóng gói báo cáo thực nghiệm, cắt tỉa nhánh bế tắc trong cây DAG, kiểm soát Budget và tự động followup phiên tư vấn. |
-| `./ctf advisor escalate <ID> -r "<REASON>"` | Hội chẩn đa mô hình | Kích hoạt PAL MCP (`challenge`, `thinkdeep`, `consensus`) để phá vỡ bế tắc khi hết ngân sách giả định. |
+| `./ctf advisor escalate <ID> -r "<REASON>"` | Phá vỡ bế tắc giả định | Kích hoạt Strategic Assumption Challenge & Reframe để phá vỡ bế tắc khi hết ngân sách giả định (giữ tương thích alias escalate_pal). |
 | `./ctf advisor status <ID>` | Giám sát ReAct | Hiển thị bảng điều khiển ReAct (Phase, Iteration, Active Hypothesis, Budget, Confidence). |
 | `./ctf meta tree <ID>` | Cây Khám Phá DAG | Hiển thị đồ thị cây màu trực quan các nhánh giả thuyết, hành động, quan sát và nhánh pruned. |
 | `./ctf meta replay <ID> -p <POLICY>` | Replay Simulator | Mô phỏng Replay một ExplorationPolicy ngoại tuyến trên DiscoveryTree lịch sử mà không cần gọi lại LLM. |
@@ -42,7 +42,7 @@ Quy chuẩn kỹ năng tác chiến phối hợp 2 AI Agent:
                                      │         [Progress]             │
                                      ├────────────────────────────────┤
                                      │      [Stalled > 2 fails]       │
-                                     └─── [6. ESCALATE via PAL] ◄─────┘
+                                      └─── [6. STRATEGIC ESCALATION] ◄─┘
                                                                       │
                                                                [Flag Found]
                                                                       ▼
@@ -107,22 +107,22 @@ Tạo thư mục `.advisor/` tại workspace của challenge:
 2. Nếu sau 2 lần thử nghiệm liên tiếp mà kết quả vẫn `REJECTED`:
    - Executor **CẤM** tiếp tục cố đấm ăn xôi.
    - Trạng thái chuyển sang `stalled`.
-   - Kích hoạt cơ chế **Thẩm định chéo (Escalation)**.
+   - Kích hoạt cơ chế **Strategic Escalation**.
 
 ---
 
-## 4. Cơ Chế Thẩm Định Chéo Đa Mô Hình (Escalation Layer via PAL MCP)
+## 4. Cơ Chế Phá Vỡ Bế Tắc Giả Định (Strategic Escalation & Assumption Challenge)
 
-Khi ChatGPT Web bị bế tắc hoặc hết ngân sách giả định, Executor gọi:
+Khi Advisor bị bế tắc hoặc hết ngân sách giả định, Executor gọi:
 ```bash
-./ctf advisor escalate <ID> -r "ChatGPT đang bám vào hướng Heap UAF nhưng libc 2.35 có safe-linking và tcache zeroing"
+./ctf advisor escalate <ID> -r "Advisor đang bám vào hướng Heap UAF nhưng libc 2.35 có safe-linking và tcache zeroing"
 ```
 
 Hệ thống sẽ:
-1. Sử dụng công cụ `challenge` hoặc `thinkdeep` của **PAL MCP** (hỏi Gemini 1.5 Pro / Claude 3.5 Sonnet / Codex).
-2. Thẩm định lại toàn bộ các giả định nền tảng (Assumptions Review).
-3. Đóng gói kết luận từ mô hình thứ 2 gửi ngược lại phiên ChatGPT Web của Oracle:
-   > *"Hội đồng thẩm định độc lập vừa phản biện: Giả định UAF không khả thi do cơ chế Safe Linking. Khuyến nghị tập trung vào hướng House of Apple hoặc Format String tại hàm log. Xin mời Lead Advisor đánh giá lại chiến lược."*
+1. Tổng hợp toàn bộ các giả thuyết thất bại, quan sát từ thực nghiệm và nguyên nhân bế tắc vào prompt phản biện (Assumption Challenge Prompt).
+2. Tái định hình bài toán (Reframe), ép buộc Advisor từ bỏ hướng đi cũ và đề xuất các góc nhìn/primitive hoàn toàn mới:
+   > *"Strategic Assumption Challenge: Giả định UAF không khả thi do cơ chế Safe Linking. Khuyến nghị tập trung vào hướng House of Apple hoặc Format String tại hàm log. Xin mời Advisor đánh giá lại chiến lược với góc nhìn mới."*
+3. *(Tương lai)*: Kết nối PAL MCP để thẩm định chéo với mô hình độc lập thứ 2 (Gemini / Claude). Hiện tại quy trình tập trung vào Strategic Assumption Challenge & Reframe trên cùng Advisor/Bridge.
 
 ---
 
