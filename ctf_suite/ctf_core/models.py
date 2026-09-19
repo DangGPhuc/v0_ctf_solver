@@ -71,6 +71,74 @@ class Hypothesis(BaseModel):
     statement: str
     confidence: float = 0.5
     rationale: str = ""
+    status: Literal[
+        "proposed",
+        "active",
+        "confirmed",
+        "rejected",
+        "inconclusive",
+    ] = "proposed"
+    attempts: int = 0
+    failure_count: int = 0
+    supporting_evidence: List[str] = Field(default_factory=list)
+    contradicting_evidence: List[str] = Field(default_factory=list)
+
+HypothesisRecord = Hypothesis
+
+class ExecutionAction(BaseModel):
+    kind: Literal[
+        "run_solver",
+        "run_python_file",
+        "run_sage_file",
+        "run_binary",
+        "read_file",
+        "list_files",
+        "analysis_tool",
+    ] = "run_solver"
+    argv: List[str] = Field(default_factory=list)
+    path: Optional[str] = None
+    tool: Optional[str] = None
+    timeout: int = 60
+
+class ExperimentEvaluation(BaseModel):
+    outcome: Literal[
+        "confirmed",
+        "rejected",
+        "inconclusive",
+        "flag_found",
+    ]
+    supporting_evidence: List[str] = Field(default_factory=list)
+    contradicting_evidence: List[str] = Field(default_factory=list)
+    reason: str = ""
+
+class Experiment(BaseModel):
+    experiment_id: str
+    hypothesis_id: str
+    intent: str
+    action: Optional[ExecutionAction] = None
+    execution_plan: List[ExecutionAction] = Field(default_factory=list)
+    expected_evidence: List[str] = Field(default_factory=list)
+    contradicting_evidence: List[str] = Field(default_factory=list)
+    actual_evidence: List[str] = Field(default_factory=list)
+    outcome: Literal[
+        "pending",
+        "confirmed",
+        "rejected",
+        "inconclusive",
+        "failed",
+        "flag_found",
+    ] = "pending"
+    reason: str = ""
+    created_at: str = Field(default_factory=lambda: datetime.now().isoformat())
+    completed_at: Optional[str] = None
+
+    @property
+    def actions_to_run(self) -> List[ExecutionAction]:
+        if self.execution_plan:
+            return list(self.execution_plan)
+        if self.action:
+            return [self.action]
+        return []
 
 class Action(BaseModel):
     type: str = "command"
@@ -80,7 +148,8 @@ class Action(BaseModel):
 class AdvisorGuidance(BaseModel):
     assessment: str = ""
     hypotheses: List[Hypothesis] = Field(default_factory=list)
-    execution_plan: List["ExecutionAction"] = Field(default_factory=list)
+    experiments: List[Experiment] = Field(default_factory=list)
+    execution_plan: List[ExecutionAction] = Field(default_factory=list)
     next_actions: List[Action] = Field(default_factory=list)
     requested_evidence: List[str] = Field(default_factory=list)
     stop_conditions: List[str] = Field(default_factory=list)
@@ -100,22 +169,6 @@ class AdvisorResult(BaseModel):
     message: str = ""
     session_id: Optional[str] = None
     raw_response: Optional[str] = None
-
-class ExecutionAction(BaseModel):
-    kind: Literal[
-        "run_solver",
-        "run_python_file",
-        "run_sage_file",
-        "run_binary",
-        "read_file",
-        "list_files",
-        "analysis_tool",
-    ] = "run_solver"
-    argv: List[str] = Field(default_factory=list)
-    path: Optional[str] = None
-    tool: Optional[str] = None
-    timeout: int = 60
-
 
 class ExecutionResult(BaseModel):
     experiment_id: str
@@ -191,11 +244,3 @@ class ChallengeFingerprint(BaseModel):
         )
 
 
-class Experiment(BaseModel):
-    experiment_id: str
-    hypothesis_id: str
-    intent: str
-    action: ExecutionAction
-    expected_evidence: List[str] = Field(default_factory=list)
-    actual_evidence: List[str] = Field(default_factory=list)
-    outcome: Literal["pending", "confirmed", "inconclusive", "failed", "flag_found"] = "pending"
