@@ -261,6 +261,11 @@ class ChallengeOrchestrator:
                 else getattr(consult_res, "active_experiment_id", None)
             )
 
+            # Invariant: Autonomous execution REQUIRES a valid canonical experiment ID
+            if not active_exp_id:
+                console.print(f"[bold red]❌ Advisor status is READY but no canonical experiment ID was assigned. Halting execution.[/bold red]")
+                return False
+
             # Build challenge context for executor
             challenge_context = {
                 "challenge_id": cid,

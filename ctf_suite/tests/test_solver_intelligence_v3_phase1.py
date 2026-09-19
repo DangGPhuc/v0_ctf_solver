@@ -856,6 +856,285 @@ class TestPhase1ProductionClosure(unittest.TestCase):
         self.assertIn("EXP-999", str(ctx.exception))
         self.assertIn("EXP-001", str(ctx.exception))
 
+    def test_manual_import_canonical_ownership_and_execution_flow(self):
+        """
+        Required Test 5 & 22: Manual Import Flow
+        Manual structured response with EXP-999 -> import_manual_response() -> ledger has EXP-001
+        -> no EXP-999, no EXP-pending -> executor executes EXP-001 -> report_execution updates EXP-001.
+        """
+        cid = "chall_manual_flow"
+        chall = Challenge(id=cid, name="ManualFlowToy", category="Web")
+        cpath = self.runtime_manager.materialize_challenge(self.event_id, chall)
+        work_dir = cpath / "work"
+        input_dir = cpath / "input"
+        target_file = input_dir / "target.txt"
+        target_file.write_text("Header\nSECRET42\nFooter\n", encoding="utf-8")
+
+        advisor_dir = cpath / ".advisor"
+        adv_service = AdvisorService(workspace_dir=self.root, runtime_manager=self.runtime_manager, event_id=self.event_id)
+        adv_service.init_challenge_advisor(cid, force=True)
+
+        manual_response_json = """```json
+{
+  "hypotheses": [
+    {
+      "id": "H1",
+      "statement": "Target contains marker SECRET42"
+    }
+  ],
+  "experiment": {
+    "experiment_id": "EXP-999",
+    "hypothesis_id": "H1",
+    "intent": "Inspect target",
+    "expected_evidence": ["SECRET42"],
+    "execution_plan": [
+      {
+        "kind": "read_file",
+        "path": "input:target.txt"
+      }
+    ]
+  }
+}
+```"""
+        adv_res = adv_service.import_manual_response(cid, manual_response_json)
+        self.assertEqual(adv_res.status, "READY")
+
+        # Invariants: ledger has exactly 1 experiment, ID is EXP-001, EXP-999 and EXP-pending absent
+        ledger = ExperimentLedger(advisor_dir)
+        all_exps = ledger.list_all()
+        self.assertEqual(len(all_exps), 1)
+        self.assertEqual(all_exps[0].experiment_id, "EXP-001")
+        self.assertIsNone(ledger.get("EXP-999"))
+        self.assertIsNone(ledger.get("EXP-pending"))
+
+        # Verify state.active_experiment_id == EXP-001
+        state = json.loads((advisor_dir / "state.json").read_text(encoding="utf-8"))
+        self.assertEqual(state.get("active_experiment_id"), "EXP-001")
+
+        # Execute using canonical experiment_id
+        challenge_context = {
+            "challenge_id": cid,
+            "name": "ManualFlowToy",
+            "category": "Web",
+            "work_dir": work_dir,
+            "input_dir": input_dir,
+            "iteration": 1,
+            "experiment_id": state["active_experiment_id"],
+        }
+        executor = RestrictedLocalExecutor()
+        exec_result = executor.execute(challenge_context, adv_res.guidance)
+        self.assertEqual(exec_result.experiment_id, "EXP-001")
+
+        # Report execution back to AdvisorService
+        report_out = adv_service.report_execution(cid, exec_result)
+        self.assertEqual(report_out["status"], "CONFIRMED")
+        self.assertEqual(report_out["experiment_id"], "EXP-001")
+
+        # Verify ledger updated EXP-001 and still has exactly 1 experiment
+        self.assertEqual(len(ledger.list_all()), 1)
+        updated_exp = ledger.get("EXP-001")
+        self.assertEqual(updated_exp.outcome, "confirmed")
+
+        # Verify H1 transitioned to confirmed
+        hypo_mgr = HypothesisManager.load(advisor_dir / "hypotheses.json")
+        self.assertEqual(hypo_mgr.get("H1").status, "confirmed")
+
+    def test_ready_contract_non_executable_cases(self):
+        """
+        Required Test 10: READY Contract Enforcements
+        A. Structured hypotheses but no experiment -> status != READY, active_experiment_id == None
+        B. Experiment with empty execution plan -> status != READY, no canonical experiment
+        C. Prose response -> status != READY, no execution
+        D. Valid structured experiment -> status == READY, active_experiment_id == EXP-001
+        """
+        cid = "chall_ready_contract"
+        chall = Challenge(id=cid, name="ReadyContractToy", category="Pwn")
+        cpath = self.runtime_manager.materialize_challenge(self.event_id, chall)
+        adv_service = AdvisorService(workspace_dir=self.root, runtime_manager=self.runtime_manager, event_id=self.event_id)
+        adv_service.init_challenge_advisor(cid, force=True)
+
+        # Case A: Structured hypotheses but no experiment
+        case_a_json = """```json
+{
+  "assessment": "Need more inspection",
+  "hypotheses": [
+    { "id": "H1", "statement": "Potential bug" }
+  ]
+}
+```"""
+        mock_res_a = AdvisorResult(status="READY", provider="oracle", raw_response=case_a_json)
+        with patch.object(adv_service.advisor_provider, "consult", return_value=mock_res_a):
+            out_a = adv_service.consult(cid)
+        self.assertNotEqual(out_a["status"], "READY")
+        self.assertIsNone(out_a["active_experiment_id"])
+
+        # Case B: Experiment with empty execution plan
+        case_b_json = """```json
+{
+  "hypotheses": [{"id": "H1", "statement": "Claim"}],
+  "experiment": {
+    "hypothesis_id": "H1",
+    "intent": "Empty plan",
+    "execution_plan": []
+  }
+}
+```"""
+        mock_res_b = AdvisorResult(status="READY", provider="oracle", raw_response=case_b_json)
+        with patch.object(adv_service.advisor_provider, "consult", return_value=mock_res_b):
+            out_b = adv_service.consult(cid)
+        self.assertNotEqual(out_b["status"], "READY")
+        self.assertIsNone(out_b["active_experiment_id"])
+
+        # Case C: Prose response
+        case_c_prose = "I think the binary has a buffer overflow. Step 1: Run gdb. Step 2: Overflow."
+        mock_res_c = AdvisorResult(status="READY", provider="oracle", raw_response=case_c_prose)
+        with patch.object(adv_service.advisor_provider, "consult", return_value=mock_res_c):
+            out_c = adv_service.consult(cid)
+        self.assertNotEqual(out_c["status"], "READY")
+        self.assertIsNone(out_c["active_experiment_id"])
+
+        # Case D: Valid structured experiment
+        case_d_json = """```json
+{
+  "hypotheses": [{"id": "H1", "statement": "Claim"}],
+  "experiment": {
+    "hypothesis_id": "H1",
+    "intent": "List dir",
+    "execution_plan": [{"kind": "list_files"}]
+  }
+}
+```"""
+        mock_res_d = AdvisorResult(status="READY", provider="oracle", raw_response=case_d_json)
+        with patch.object(adv_service.advisor_provider, "consult", return_value=mock_res_d):
+            out_d = adv_service.consult(cid)
+        self.assertEqual(out_d["status"], "READY")
+        self.assertEqual(out_d["active_experiment_id"], "EXP-001")
+        ledger = ExperimentLedger(cpath / ".advisor")
+        self.assertIsNotNone(ledger.get("EXP-001"))
+
+    def test_orchestrator_fails_closed_when_ready_without_experiment_id(self):
+        """
+        Required Test 23: ChallengeOrchestrator fails closed if consult status is READY
+        but active_experiment_id is missing/None. Executor is NEVER called.
+        """
+        cid = "chall_no_exp_id"
+        chall = Challenge(id=cid, name="NoExpIdToy", category="Misc")
+        self.runtime_manager.materialize_challenge(self.event_id, chall)
+
+        mock_advisor = MagicMock(spec=AdvisorService)
+        # Rogue advisor returns READY but active_experiment_id is None
+        mock_advisor.consult.return_value = {
+            "status": "READY",
+            "active_experiment_id": None,
+            "guidance": AdvisorGuidance(is_structured=True),
+        }
+
+        mock_executor = MagicMock()
+        orchestrator = ChallengeOrchestrator(
+            workspace_dir=self.root,
+            runtime_manager=self.runtime_manager,
+            event_id=self.event_id,
+            advisor=mock_advisor,
+            executor=mock_executor,
+            max_iterations_per_chall=1,
+        )
+
+        res = orchestrator.execute_challenge_cycle({"id": cid, "name": "NoExpIdToy", "category": "Misc"})
+        self.assertFalse(res)
+        mock_executor.execute.assert_not_called()
+
+    def test_truncated_read_file_absence_must_not_reject(self):
+        """
+        Required Tests 15 & 24: Truncated File Evidence Safety
+        Uses real RestrictedLocalExecutor on files larger than the truncation tail limit (1500 bytes).
+        A. Small complete read, marker absent -> REJECTED
+        B. Large truncated read (>1500 bytes), marker outside tail (near byte 200) -> CONFIRMED (not rejected)
+        C. Large truncated read (>1500 bytes), marker genuinely absent -> INCONCLUSIVE (not rejected)
+        D. Generic analysis tool without phrase and without explicit contradiction -> INCONCLUSIVE
+        """
+        cid = "chall_truncation_test"
+        chall = Challenge(id=cid, name="TruncationToy", category="Forensics")
+        cpath = self.runtime_manager.materialize_challenge(self.event_id, chall)
+        work_dir = cpath / "work"
+        input_dir = cpath / "input"
+        executor = RestrictedLocalExecutor()
+
+        # Case A: Small file (complete read), expected SECRET42 absent -> REJECTED
+        small_file = input_dir / "small.txt"
+        small_file.write_text("Short file content without target marker\n", encoding="utf-8")
+        action_a = ExecutionAction(kind="read_file", path="input:small.txt")
+        guidance_a = AdvisorGuidance(
+            is_structured=True,
+            execution_plan=[action_a],
+            experiment=ExperimentProposal(
+                hypothesis_id="H1",
+                intent="Read small file",
+                expected_evidence=["SECRET42"],
+                execution_plan=[action_a],
+            ),
+        )
+        ctx_a = {"work_dir": work_dir, "input_dir": input_dir, "iteration": 1, "experiment_id": "EXP-001"}
+        res_a = executor.execute(ctx_a, guidance_a)
+        self.assertFalse(res_a.stdout_truncated)
+        self.assertTrue(res_a.output_complete)
+        exp_a = Experiment(experiment_id="EXP-001", hypothesis_id="H1", intent="Read small file", expected_evidence=["SECRET42"], execution_plan=[action_a])
+        eval_a = EvidenceEvaluator.evaluate(exp_a, res_a)
+        self.assertEqual(eval_a.outcome, "rejected")
+
+        # Case B: Large file (>1500 bytes), SECRET42 placed near byte 200 (outside stdout_tail)
+        # Pad with 3000 bytes so SECRET42 is definitely outside stdout[-1500:]
+        padding_before = "A" * 200
+        padding_after = "B" * 3000
+        large_file_with_secret = input_dir / "large_secret.txt"
+        large_file_with_secret.write_text(f"{padding_before}SECRET42{padding_after}\n", encoding="utf-8")
+
+        action_b = ExecutionAction(kind="read_file", path="input:large_secret.txt")
+        guidance_b = AdvisorGuidance(
+            is_structured=True,
+            execution_plan=[action_b],
+            experiment=ExperimentProposal(
+                hypothesis_id="H1",
+                intent="Read large file with secret",
+                expected_evidence=["SECRET42"],
+                execution_plan=[action_b],
+            ),
+        )
+        ctx_b = {"work_dir": work_dir, "input_dir": input_dir, "iteration": 2, "experiment_id": "EXP-002"}
+        res_b = executor.execute(ctx_b, guidance_b)
+        self.assertTrue(res_b.stdout_truncated)
+        self.assertFalse(res_b.output_complete)
+        self.assertNotIn("SECRET42", res_b.stdout_tail or "")
+        # But pre-truncation extraction found SECRET42 in res_b.evidence!
+        self.assertTrue(any("SECRET42" in ev for ev in res_b.evidence))
+        exp_b = Experiment(experiment_id="EXP-002", hypothesis_id="H1", intent="Read large file", expected_evidence=["SECRET42"], execution_plan=[action_b])
+        eval_b = EvidenceEvaluator.evaluate(exp_b, res_b)
+        self.assertEqual(eval_b.outcome, "confirmed")
+        self.assertNotEqual(eval_b.outcome, "rejected")
+
+        # Case C: Large file (>1500 bytes), SECRET42 genuinely absent
+        large_file_no_secret = input_dir / "large_no_secret.txt"
+        large_file_no_secret.write_text("C" * 3500 + "\n", encoding="utf-8")
+        action_c = ExecutionAction(kind="read_file", path="input:large_no_secret.txt")
+        guidance_c = AdvisorGuidance(
+            is_structured=True,
+            execution_plan=[action_c],
+            experiment=ExperimentProposal(
+                hypothesis_id="H1",
+                intent="Read large file without secret",
+                expected_evidence=["SECRET42"],
+                execution_plan=[action_c],
+            ),
+        )
+        ctx_c = {"work_dir": work_dir, "input_dir": input_dir, "iteration": 3, "experiment_id": "EXP-003"}
+        res_c = executor.execute(ctx_c, guidance_c)
+        self.assertTrue(res_c.stdout_truncated)
+        self.assertFalse(res_c.output_complete)
+        exp_c = Experiment(experiment_id="EXP-003", hypothesis_id="H1", intent="Read large file", expected_evidence=["SECRET42"], execution_plan=[action_c])
+        eval_c = EvidenceEvaluator.evaluate(exp_c, res_c)
+        # CRITICAL INVARIANT: Truncated read must NEVER reject; must be INCONCLUSIVE
+        self.assertEqual(eval_c.outcome, "inconclusive")
+        self.assertNotEqual(eval_c.outcome, "rejected")
+
 
 if __name__ == "__main__":
     unittest.main()

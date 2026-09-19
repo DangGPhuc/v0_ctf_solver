@@ -311,6 +311,60 @@ class AdvisorService:
             "EXPECTED_RESULTS, REQUESTED_EVIDENCE, STOP_CONDITION."
         )
 
+    def _create_canonical_experiment(
+        self,
+        advisor_dir: Path,
+        state: Dict[str, Any],
+        guidance: AdvisorGuidance,
+    ) -> Optional[Experiment]:
+        """
+        Creates a system-owned canonical experiment in ExperimentLedger from an Advisor proposal.
+        The Advisor must NOT own or choose the canonical experiment ID.
+        """
+        ledger = ExperimentLedger(advisor_dir)
+        canonical_exp = None
+        if guidance.experiment and guidance.experiment.execution_plan:
+            canonical_exp = ledger.create(
+                hypothesis_id=guidance.experiment.hypothesis_id,
+                intent=guidance.experiment.intent,
+                actions=guidance.experiment.execution_plan,
+                expected_evidence=guidance.experiment.expected_evidence,
+                contradicting_evidence=guidance.experiment.contradicting_evidence,
+            )
+            state["active_experiment_id"] = canonical_exp.experiment_id
+        elif guidance.execution_plan:
+            hypo_id = guidance.hypotheses[0].id if guidance.hypotheses else (state.get("active_hypothesis_id") or "H1")
+            canonical_exp = ledger.create(
+                hypothesis_id=hypo_id,
+                intent=guidance.assessment or "Execute solver plan",
+                actions=guidance.execution_plan,
+                expected_evidence=guidance.requested_evidence,
+            )
+            state["active_experiment_id"] = canonical_exp.experiment_id
+        else:
+            state["active_experiment_id"] = None
+
+        return canonical_exp
+
+    def _is_executable_guidance(
+        self,
+        guidance: AdvisorGuidance,
+        canonical_exp: Optional[Experiment],
+    ) -> bool:
+        """
+        Checks if the advisor guidance constitutes an executable structured experiment:
+        1. No JSON/validation error
+        2. Structured payload
+        3. A canonical experiment exists in ledger
+        4. The canonical experiment contains at least one typed ExecutionAction
+        """
+        return (
+            guidance.validation_error is None
+            and guidance.is_structured
+            and canonical_exp is not None
+            and bool(canonical_exp.actions_to_run)
+        )
+
     def consult(self, challenge_id: Any, extra_instruction: Optional[str] = None) -> Dict[str, Any]:
         """
         Thực hiện tham vấn Strategic Advisor (ChatGPT Web qua Oracle):
@@ -406,28 +460,8 @@ class AdvisorService:
         hypo_mgr.save(advisor_dir / "hypotheses.json")
 
         # Ghi nhận experiment được đề xuất vào ExperimentLedger trước khi thực thi
-        ledger = ExperimentLedger(advisor_dir)
-        canonical_exp_id = None
-        if guidance.experiment and guidance.experiment.execution_plan:
-            canonical_exp = ledger.create(
-                hypothesis_id=guidance.experiment.hypothesis_id,
-                intent=guidance.experiment.intent,
-                actions=guidance.experiment.execution_plan,
-                expected_evidence=guidance.experiment.expected_evidence,
-                contradicting_evidence=guidance.experiment.contradicting_evidence,
-            )
-            canonical_exp_id = canonical_exp.experiment_id
-            state["active_experiment_id"] = canonical_exp_id
-        elif guidance.execution_plan:
-            hypo_id = guidance.hypotheses[0].id if guidance.hypotheses else (state.get("active_hypothesis_id") or "H1")
-            canonical_exp = ledger.create(
-                hypothesis_id=hypo_id,
-                intent=guidance.assessment or "Execute solver plan",
-                actions=guidance.execution_plan,
-                expected_evidence=guidance.requested_evidence,
-            )
-            canonical_exp_id = canonical_exp.experiment_id
-            state["active_experiment_id"] = canonical_exp_id
+        canonical_exp = self._create_canonical_experiment(advisor_dir, state, guidance)
+        canonical_exp_id = canonical_exp.experiment_id if canonical_exp else None
 
         # Cập nhật state.json
         state["iteration"] = state.get("iteration", 0) + 1
@@ -441,6 +475,10 @@ class AdvisorService:
         if guidance.validation_error:
             adv_status = "ERROR"
             adv_msg = f"Advisor structured JSON payload invalid: {guidance.validation_error}"
+        elif not self._is_executable_guidance(guidance, canonical_exp):
+            adv_status = "ERROR"
+            adv_msg = "Advisor response contains no executable structured experiment."
+            canonical_exp_id = None
         else:
             adv_status = "READY"
             adv_msg = "Guidance received from strategic advisor"
@@ -494,37 +532,15 @@ class AdvisorService:
             state_file.write_text(json.dumps(state, indent=2, ensure_ascii=False), encoding="utf-8")
         hypo_mgr.save(advisor_dir / "hypotheses.json")
 
-        ledger = ExperimentLedger(advisor_dir)
-        canonical_exp_id = None
-        if guidance.experiment and guidance.experiment.execution_plan:
-            canonical_exp = ledger.create(
-                hypothesis_id=guidance.experiment.hypothesis_id,
-                intent=guidance.experiment.intent,
-                actions=guidance.experiment.execution_plan,
-                expected_evidence=guidance.experiment.expected_evidence,
-                contradicting_evidence=guidance.experiment.contradicting_evidence,
-            )
-            canonical_exp_id = canonical_exp.experiment_id
-            state["active_experiment_id"] = canonical_exp_id
-        elif guidance.execution_plan:
-            hypo_id = guidance.hypotheses[0].id if guidance.hypotheses else (state.get("active_hypothesis_id") or "H1")
-            canonical_exp = ledger.create(
-                hypothesis_id=hypo_id,
-                intent=guidance.assessment or "Execute solver plan",
-                actions=guidance.execution_plan,
-                expected_evidence=guidance.requested_evidence,
-            )
-            canonical_exp_id = canonical_exp.experiment_id
-            state["active_experiment_id"] = canonical_exp_id
-
-        for exp in guidance.experiments:
-            ledger.append(exp)
-
+        canonical_exp = self._create_canonical_experiment(advisor_dir, state, guidance)
         state_file.write_text(json.dumps(state, indent=2, ensure_ascii=False), encoding="utf-8")
 
         if guidance.validation_error:
             adv_status = "ERROR"
             adv_msg = f"Manual guidance JSON payload invalid: {guidance.validation_error}"
+        elif not self._is_executable_guidance(guidance, canonical_exp):
+            adv_status = "ERROR"
+            adv_msg = "Manual guidance contains no executable structured experiment."
         else:
             adv_status = "READY"
             adv_msg = "Manual guidance imported and parsed successfully"

@@ -178,6 +178,10 @@ class EvidenceEvaluator:
         if not observed_corpus.strip():
             return False
 
+        # Output MUST be complete (not truncated) to prove definitive absence
+        if not getattr(res, "output_complete", True) or getattr(res, "stdout_truncated", False):
+            return False
+
         # Strictly read_file only: generic analysis_tool absence is NEVER definitive absence
         actions = exp.actions_to_run
         is_read_file = any(a.kind == "read_file" for a in actions)

@@ -156,6 +156,7 @@ class AdvisorGuidance(BaseModel):
     assessment: str = ""
     hypotheses: List[Hypothesis] = Field(default_factory=list)
     experiment: Optional[ExperimentProposal] = None
+    # Legacy/read-only compatibility field. MUST NOT be written directly to ExperimentLedger.
     experiments: List[Experiment] = Field(default_factory=list)
     execution_plan: List[ExecutionAction] = Field(default_factory=list)
     next_actions: List[Action] = Field(default_factory=list)
@@ -194,6 +195,9 @@ class ExecutionResult(BaseModel):
     flag_candidates: List[str] = Field(default_factory=list)
     stdout_tail: Optional[str] = None
     stderr_tail: Optional[str] = None
+    stdout_truncated: bool = False
+    stderr_truncated: bool = False
+    output_complete: bool = True
 
 # ==============================================================================
 # KNOWLEDGE CARD SCHEMA (DISTILLED MEMORY - NO REAL FLAGS/CREDS)
