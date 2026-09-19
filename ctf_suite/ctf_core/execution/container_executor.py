@@ -83,7 +83,12 @@ class ContainerExecutor:
                     pass
         return None
 
-    def execute(self, challenge_context: Dict[str, Any], guidance: AdvisorGuidance) -> ExecutionResult:
+    def execute(
+        self,
+        challenge_context: Dict[str, Any],
+        guidance: Optional[AdvisorGuidance] = None,
+        allow_trusted_fallback: bool = False,
+    ) -> ExecutionResult:
         work_dir = Path(challenge_context.get("work_dir", ".")).resolve()
         input_dir = work_dir.parent / "input"
         iteration = challenge_context.get("iteration", 1)
@@ -93,7 +98,7 @@ class ContainerExecutor:
         if not self.engine:
             if self.allow_local_fallback:
                 console.print("[yellow]⚠️ No container engine active. Delegating to RestrictedLocalExecutor (--allow-local-fallback is ON).[/yellow]")
-                return self.fallback.execute(challenge_context, guidance)
+                return self.fallback.execute(challenge_context, guidance, allow_trusted_fallback=allow_trusted_fallback)
             console.print("[bold red]❌ Container engine (docker/podman) is unavailable. Untrusted code will NOT be run on host by default.[/bold red]")
             return ExecutionResult(
                 experiment_id=experiment_id,
@@ -225,11 +230,12 @@ class ContainerExecutor:
                 single_action_executor=run_single_container_action,
                 flag_format_regex=self.flag_format_regex,
                 default_timeout=60,
+                allow_trusted_fallback=allow_trusted_fallback,
             )
         except Exception as e:
             if self.allow_local_fallback:
                 console.print(f"[yellow]⚠️ Container execution failed: {e}. Falling back to RestrictedLocalExecutor (--allow-local-fallback is ON).[/yellow]")
-                return self.fallback.execute(challenge_context, guidance)
+                return self.fallback.execute(challenge_context, guidance, allow_trusted_fallback=allow_trusted_fallback)
             console.print(f"[bold red]❌ Container execution failed: {e}. Silently running on host is disabled.[/bold red]")
             return ExecutionResultEvaluator.build_result(
                 experiment_id=experiment_id,

@@ -467,13 +467,6 @@ class AdvisorService:
         """Parse advisor markdown/text output into structured AdvisorGuidance."""
         return GuidanceParser.parse(text)
 
-
-    def _build_oracle_command(self, prompt: str, oracle_session: Optional[str] = None) -> Optional[List[str]]:
-        """Deprecated: Oracle command construction is owned by OracleAdvisorProvider."""
-        if hasattr(self.advisor_provider, "_build_command"):
-            return self.advisor_provider._build_command(prompt, oracle_session)
-        return None
-
     def _copy_to_clipboard(self, text: str) -> bool:
         try:
             p = subprocess.Popen(["xclip", "-selection", "clipboard"], stdin=subprocess.PIPE)

@@ -496,9 +496,50 @@ def test_execution_fallback_valid_structured_plan_executes(tmp_path):
     assert "FLAG{VALID_STRUCTURED_EXECUTION}" in res.flag_candidates
 
 
+def test_execution_fallback_empty_guidance_does_not_execute_solver(tmp_path):
+    """
+    Test A: Empty AdvisorGuidance() must NOT fall back to executing an existing solver script.
+    Trust is NEVER inferred from emptiness.
+    """
+    work_dir = tmp_path / "work"
+    work_dir.mkdir()
+    solve_file = work_dir / "solve.py"
+    solve_file.write_text("print('SOLVER_SHOULD_NOT_EXECUTE')\n")
+
+    empty_guidance = AdvisorGuidance()
+
+    actions = ExecutionRunner.resolve_actions_to_run(empty_guidance, work_dir, allow_trusted_fallback=False)
+    assert actions == [], "Empty AdvisorGuidance must not produce actions or trigger fallback!"
+
+    executor = RestrictedLocalExecutor()
+    res = executor.execute({"work_dir": work_dir}, empty_guidance, allow_trusted_fallback=False)
+    assert "SOLVER_SHOULD_NOT_EXECUTE" not in (res.stdout_tail or "")
+    assert "SOLVER_SHOULD_NOT_EXECUTE" not in res.observed
+    assert res.actions == [] or "no_actions_resolved" in res.actions[0]
+
+
+def test_execution_fallback_none_guidance_untrusted_rejected(tmp_path):
+    """
+    Test B: guidance=None without explicit trust (allow_trusted_fallback=False)
+    must NOT fall back to executing an existing solver script.
+    """
+    work_dir = tmp_path / "work"
+    work_dir.mkdir()
+    solve_file = work_dir / "solve.py"
+    solve_file.write_text("print('UNTRUSTED_NONE_EXECUTED')\n")
+
+    actions = ExecutionRunner.resolve_actions_to_run(None, work_dir, allow_trusted_fallback=False)
+    assert actions == [], "None guidance without allow_trusted_fallback=True must return []!"
+
+    executor = RestrictedLocalExecutor()
+    res = executor.execute({"work_dir": work_dir}, guidance=None, allow_trusted_fallback=False)
+    assert "UNTRUSTED_NONE_EXECUTED" not in (res.stdout_tail or "")
+    assert "UNTRUSTED_NONE_EXECUTED" not in res.observed
+
+
 def test_execution_fallback_trusted_internal_path(tmp_path):
     """
-    Section 8 Test: Trusted internal default path (no guidance, e.g. manual './ctf run')
+    Section 8 Test: Trusted internal default path (guidance=None, allow_trusted_fallback=True)
     executes existing solve.py as intended.
     """
     work_dir = tmp_path / "work"
@@ -506,8 +547,14 @@ def test_execution_fallback_trusted_internal_path(tmp_path):
     solve_file = work_dir / "solve.py"
     solve_file.write_text("print('FLAG{TRUSTED_DEFAULT_RUN}')\n")
 
-    # None guidance on internal path
+    # 1. resolve_actions_to_run returns solver action when allow_trusted_fallback=True
     actions = ExecutionRunner.resolve_actions_to_run(None, work_dir, allow_trusted_fallback=True)
     assert len(actions) == 1
     assert actions[0].kind == "run_solver"
     assert actions[0].path == "solve.py"
+
+    # 2. executor.execute runs solver when allow_trusted_fallback=True
+    executor = RestrictedLocalExecutor(flag_format_regex=r"FLAG\{[^\n\r\}]+\}")
+    res = executor.execute({"work_dir": work_dir}, guidance=None, allow_trusted_fallback=True)
+    assert res.status == "FLAG_FOUND"
+    assert "FLAG{TRUSTED_DEFAULT_RUN}" in res.flag_candidates
