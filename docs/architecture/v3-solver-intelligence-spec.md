@@ -80,52 +80,61 @@ class ChallengeFingerprint(BaseModel):
 ### 3.2. Vòng Lặp Thực Nghiệm Dựa Trên Bằng Chứng (Evidence-Driven Loop)
 Thay vì để mô hình viết code khai thác ngay từ đầu, hệ thống ép buộc quy trình suy luận khoa học:
 
-```
-Quan sát (Observation)
-       │
-       ▼
-Giả thuyết (Hypothesis)
-       │
-       ▼
-Bằng chứng mong đợi (Expected Evidence)
-       │
-       ▼
-Thực nghiệm định kiểu (Typed ExecutionAction)
-       │
-       ▼
-Thực thi Sandbox (Container / Restricted Tool)
-       │
-       ▼
-Thu thập & Đánh giá Bằng chứng (Evidence Evaluator)
-       │
-       ├────────────────────────┐
-       ▼                        ▼
- [Bác bỏ / Thất bại]      [Xác nhận]
-       │                        │
-       ▼                        ▼
- Đổi hướng (Pivot)         Tiếp tục giả thuyết tiếp theo
- (Hoặc PAL Escalation)         hoặc Tạo Exploit hoàn chỉnh
+```text
+Fingerprint
+    ↓
+Knowledge Context
+    ↓
+Advisor
+    ↓
+Hypothesis
+    ↓
+Experiment
+    ↓
+Typed Execution
+    ↓
+Evidence
+    ↓
+Evaluation
+├── Confirm
+├── Reject
+└── Inconclusive
+    ↓
+Pivot
 ```
 
-### 3.3. Hợp Đồng Dữ Liệu `Hypothesis` & `Experiment`
+### 3.3. Ranh Giới Trách Nhiệm Tách Bạch Tuyệt Đối (Phase 1 Invariants)
+- **Advisor**: Đề xuất giả thuyết (`Hypothesis`) và thực nghiệm kiểm chứng (`Experiment`). KHÔNG trực tiếp thực thi tool hay quyết định tính chân lý của giả thuyết.
+- **HypothesisManager**: Theo dõi vòng đời lý luận (`proposed -> active -> confirmed / rejected / inconclusive`). KHÔNG chạy tool, KHÔNG gọi platform, KHÔNG gọi LLM.
+- **ExperimentLedger**: Nguồn ghi chép duy nhất (Single Canonical Writer) cho toàn bộ lịch sử thực nghiệm (`.advisor/experiments.jsonl`). Tự phục hồi khi gặp dòng lỗi.
+- **Executor (RestrictedLocal / Container)**: Thực thi các hành động định kiểu an toàn (`ExecutionAction`). KHÔNG quyết định kết quả giả thuyết.
+- **EvidenceEvaluator**: Đánh giá kết quả thực nghiệm hoàn toàn tất định (Deterministic, NO LLM). Execution failure/timeout dẫn tới `INCONCLUSIVE`, tuyệt đối KHÔNG ngộ nhận thành `REJECTED`.
+- **DiscoveryTree**: Trực quan hóa cây không gian tìm kiếm (DAG Exploration Visualization).
+
+### 3.4. Hợp Đồng Dữ Liệu `Hypothesis` & `Experiment`
 ```python
 class Hypothesis(BaseModel):
-    id: str                                                  # e.g., "H1"
-    statement: str                                           # "Stack overflow reaches saved RIP"
-    rationale: str                                           # "main reads 512B into 64B buffer without canary"
-    status: Literal["proposed", "active", "confirmed", "rejected", "stalled"] = "proposed"
+    id: str = "H1"
+    statement: str
     confidence: float = 0.5
-    experiments_run: int = 0
+    rationale: str = ""
+    status: Literal["proposed", "active", "confirmed", "rejected", "inconclusive"] = "proposed"
+    attempts: int = 0
     failure_count: int = 0
+    supporting_evidence: List[str] = Field(default_factory=list)
+    contradicting_evidence: List[str] = Field(default_factory=list)
 
 class Experiment(BaseModel):
-    experiment_id: str                                       # e.g., "EXP-001"
-    hypothesis_id: str                                       # "H1"
-    intent: str                                              # "Send cyclic pattern to determine RIP offset"
-    action: ExecutionAction
-    expected_evidence: List[str]                             # ["RIP = 0x616161..."]
+    experiment_id: str
+    hypothesis_id: str
+    intent: str
+    action: Optional[ExecutionAction] = None
+    execution_plan: List[ExecutionAction] = Field(default_factory=list)
+    expected_evidence: List[str] = Field(default_factory=list)
+    contradicting_evidence: List[str] = Field(default_factory=list)
     actual_evidence: List[str] = Field(default_factory=list)
-    outcome: Literal["pending", "confirmed", "inconclusive", "failed", "flag_found"] = "pending"
+    outcome: Literal["pending", "confirmed", "rejected", "inconclusive", "failed", "flag_found"] = "pending"
+    reason: str = ""
 ```
 
 ---
