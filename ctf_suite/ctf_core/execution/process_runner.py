@@ -147,6 +147,61 @@ class StreamingProcessRunner:
         deadline = time.monotonic() + timeout
         timed_out = False
 
+        def process_chunk(stream_name: str, chunk: bytes):
+            nonlocal total_stdout_len, total_stderr_len, stdout_truncated, stderr_truncated
+            nonlocal stdout_window, stderr_window
+
+            if not chunk:
+                return
+
+            if stream_name == "stdout":
+                total_stdout_len += len(chunk)
+                if sum(len(c) for c in stdout_chunks) < max_stdout:
+                    space_left = max_stdout - sum(len(c) for c in stdout_chunks)
+                    if space_left > 0:
+                        stdout_chunks.append(chunk[:space_left])
+                if total_stdout_len > max_stdout:
+                    stdout_truncated = True
+
+                stdout_window.extend(chunk)
+                decoded_window = stdout_window.decode("utf-8", errors="replace")
+                for match in flag_pattern.findall(decoded_window):
+                    if match not in seen_flags:
+                        seen_flags.add(match)
+                        flag_candidates.append(match)
+
+                for ev in target_ev_patterns:
+                    if ev.lower() in decoded_window.lower() and ev not in seen_evidence:
+                        seen_evidence.add(ev)
+                        matched_evidence.append(ev)
+
+                if len(stdout_window) > cls.SLIDING_WINDOW_BYTES:
+                    stdout_window = stdout_window[-cls.SLIDING_WINDOW_BYTES:]
+
+            elif stream_name == "stderr":
+                total_stderr_len += len(chunk)
+                if sum(len(c) for c in stderr_chunks) < max_stderr:
+                    space_left = max_stderr - sum(len(c) for c in stderr_chunks)
+                    if space_left > 0:
+                        stderr_chunks.append(chunk[:space_left])
+                if total_stderr_len > max_stderr:
+                    stderr_truncated = True
+
+                stderr_window.extend(chunk)
+                decoded_window = stderr_window.decode("utf-8", errors="replace")
+                for match in flag_pattern.findall(decoded_window):
+                    if match not in seen_flags:
+                        seen_flags.add(match)
+                        flag_candidates.append(match)
+
+                for ev in target_ev_patterns:
+                    if ev.lower() in decoded_window.lower() and ev not in seen_evidence:
+                        seen_evidence.add(ev)
+                        matched_evidence.append(ev)
+
+                if len(stderr_window) > cls.SLIDING_WINDOW_BYTES:
+                    stderr_window = stderr_window[-cls.SLIDING_WINDOW_BYTES:]
+
         open_readers = 2
 
         try:
@@ -168,7 +223,6 @@ class StreamingProcessRunner:
                         continue
 
                     if not chunk:
-                        # EOF on this stream
                         try:
                             sel.unregister(stream)
                         except Exception:
@@ -176,86 +230,33 @@ class StreamingProcessRunner:
                         open_readers -= 1
                         continue
 
-                    if stream_name == "stdout":
-                        total_stdout_len += len(chunk)
-                        # Retain up to limit
-                        if len(stdout_window) < max_stdout:
-                            space_left = max_stdout - sum(len(c) for c in stdout_chunks)
-                            if space_left > 0:
-                                stdout_chunks.append(chunk[:space_left])
-                        if total_stdout_len > max_stdout:
-                            stdout_truncated = True
+                    process_chunk(stream_name, chunk)
 
-                        # Streaming evidence matching
-                        stdout_window.extend(chunk)
-                        # Keep sliding window
-                        if len(stdout_window) > cls.SLIDING_WINDOW_BYTES + len(chunk):
-                            stdout_window = stdout_window[-cls.SLIDING_WINDOW_BYTES:]
-
-                        # Scan window for flags and evidence
-                        decoded_window = stdout_window.decode("utf-8", errors="replace")
-                        for match in flag_pattern.findall(decoded_window):
-                            if match not in seen_flags:
-                                seen_flags.add(match)
-                                flag_candidates.append(match)
-
-                        for ev in target_ev_patterns:
-                            if ev.lower() in decoded_window.lower() and ev not in seen_evidence:
-                                seen_evidence.add(ev)
-                                matched_evidence.append(ev)
-
-                    elif stream_name == "stderr":
-                        total_stderr_len += len(chunk)
-                        if sum(len(c) for c in stderr_chunks) < max_stderr:
-                            space_left = max_stderr - sum(len(c) for c in stderr_chunks)
-                            if space_left > 0:
-                                stderr_chunks.append(chunk[:space_left])
-                        if total_stderr_len > max_stderr:
-                            stderr_truncated = True
-
-                        stderr_window.extend(chunk)
-                        if len(stderr_window) > cls.SLIDING_WINDOW_BYTES + len(chunk):
-                            stderr_window = stderr_window[-cls.SLIDING_WINDOW_BYTES:]
-
-                        decoded_window = stderr_window.decode("utf-8", errors="replace")
-                        for match in flag_pattern.findall(decoded_window):
-                            if match not in seen_flags:
-                                seen_flags.add(match)
-                                flag_candidates.append(match)
-
-                        for ev in target_ev_patterns:
-                            if ev.lower() in decoded_window.lower() and ev not in seen_evidence:
-                                seen_evidence.add(ev)
-                                matched_evidence.append(ev)
-
-                # Check if child has exited while output is drained
-                if proc.poll() is not None and not events:
-                    # Give one quick non-blocking pass to drain remaining bytes
+                # If child process exited, exhaustively drain any remaining bytes in pipes until EOF
+                if proc.poll() is not None:
                     for key in list(sel.get_map().values()):
-                        try:
-                            chunk = key.fileobj.read(65536)
-                            if chunk:
-                                if key.data == "stdout":
-                                    total_stdout_len += len(chunk)
-                                    space_left = max_stdout - sum(len(c) for c in stdout_chunks)
-                                    if space_left > 0:
-                                        stdout_chunks.append(chunk[:space_left])
-                                    if total_stdout_len > max_stdout:
-                                        stdout_truncated = True
-                                else:
-                                    total_stderr_len += len(chunk)
-                                    space_left = max_stderr - sum(len(c) for c in stderr_chunks)
-                                    if space_left > 0:
-                                        stderr_chunks.append(chunk[:space_left])
-                                    if total_stderr_len > max_stderr:
-                                        stderr_truncated = True
-                        except Exception:
-                            pass
-                        try:
-                            sel.unregister(key.fileobj)
-                        except Exception:
-                            pass
-                    break
+                        stream_name = key.data
+                        stream = key.fileobj
+                        while True:
+                            try:
+                                chunk = stream.read(65536)
+                            except (BlockingIOError, InterruptedError):
+                                break
+                            except Exception:
+                                chunk = b""
+
+                            if not chunk:
+                                try:
+                                    sel.unregister(stream)
+                                except Exception:
+                                    pass
+                                open_readers -= 1
+                                break
+
+                            process_chunk(stream_name, chunk)
+
+                    if open_readers <= 0:
+                        break
 
         finally:
             sel.close()
