@@ -65,18 +65,33 @@ class PromptCompiler:
                     confirmed_facts.append(line_str.lstrip("- "))
         confirmed_facts = confirmed_facts[:8]  # Giữ tối đa 8 facts then chốt
 
-        # 2. Trích xuất Rejected Hypotheses từ tree.json hoặc experiments.jsonl
+        # 2. Trích xuất Rejected Hypotheses từ hypotheses.json, tree.json hoặc experiments.jsonl
         rejected_hypotheses = []
+        hypo_file = advisor_dir / "hypotheses.json"
+        if hypo_file.is_file():
+            try:
+                hypo_data = json.loads(hypo_file.read_text(encoding="utf-8"))
+                for h in hypo_data.get("hypotheses", []):
+                    if h.get("status") == "rejected":
+                        rejected_hypotheses.append({
+                            "name": f"{h.get('id')}: {h.get('statement', '')[:40]}",
+                            "reason": "; ".join(h.get("contradicting_evidence", [])) or "Rejected by experiment evidence",
+                        })
+            except Exception:
+                pass
+
         tree_file = advisor_dir / "tree.json"
         if tree_file.is_file():
             try:
                 tree_data = json.loads(tree_file.read_text(encoding="utf-8"))
                 for nid, n in tree_data.get("nodes", {}).items():
                     if n.get("status") in ["rejected", "pruned"]:
-                        rejected_hypotheses.append({
-                            "name": n.get("name", nid),
-                            "reason": n.get("payload", {}).get("diff") or n.get("payload", {}).get("observed") or "Rejected",
-                        })
+                        name = n.get("name", nid)
+                        if not any(rh.get("name") == name for rh in rejected_hypotheses):
+                            rejected_hypotheses.append({
+                                "name": name,
+                                "reason": n.get("payload", {}).get("diff") or n.get("payload", {}).get("observed") or "Rejected",
+                            })
             except Exception:
                 pass
 

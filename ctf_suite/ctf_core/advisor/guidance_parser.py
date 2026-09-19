@@ -25,6 +25,42 @@ class GuidanceParser:
                 data = json.loads(json_match.group(1))
                 if isinstance(data, dict):
                     data["raw_text"] = text
+
+                    # Handle single 'experiment' dict
+                    if "experiment" in data and isinstance(data["experiment"], dict) and "experiments" not in data:
+                        data["experiments"] = [data["experiment"]]
+
+                    # Support flat experiment specification
+                    if "experiments" not in data and ("intent" in data or "expected_evidence" in data):
+                        exp_id = data.get("experiment_id", "EXP-001")
+                        hypo_id = data.get("hypothesis_id", "H1")
+                        intent = data.get("intent", data.get("assessment", "Experiment action"))
+                        expected_ev = data.get("expected_evidence", data.get("requested_evidence", []))
+                        if isinstance(expected_ev, str):
+                            expected_ev = [expected_ev]
+                        contra_ev = data.get("contradicting_evidence", [])
+                        if isinstance(contra_ev, str):
+                            contra_ev = [contra_ev]
+                        data["experiments"] = [{
+                            "experiment_id": exp_id,
+                            "hypothesis_id": hypo_id,
+                            "intent": intent,
+                            "execution_plan": data.get("execution_plan", []),
+                            "expected_evidence": expected_ev,
+                            "contradicting_evidence": contra_ev,
+                        }]
+
+                    # Cross-propagate execution_plan between root and experiments
+                    if data.get("experiments"):
+                        first_exp = data["experiments"][0]
+                        if not data.get("execution_plan") and isinstance(first_exp, dict):
+                            if first_exp.get("execution_plan"):
+                                data["execution_plan"] = first_exp["execution_plan"]
+                            elif first_exp.get("action"):
+                                data["execution_plan"] = [first_exp["action"]]
+                        elif data.get("execution_plan") and isinstance(first_exp, dict) and not first_exp.get("execution_plan") and not first_exp.get("action"):
+                            first_exp["execution_plan"] = data["execution_plan"]
+
                     guidance = AdvisorGuidance.model_validate(data)
                     guidance.is_structured = True
                     return guidance

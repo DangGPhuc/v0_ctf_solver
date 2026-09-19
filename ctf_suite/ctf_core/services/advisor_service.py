@@ -39,6 +39,13 @@ from ..prompts import (
     CTFTemplates,
     StateCapsule,
 )
+from ..experiments import (
+    HypothesisManager,
+    ExperimentLedger,
+    EvidenceEvaluator,
+    ExperimentEvaluation,
+    Experiment,
+)
 
 console = Console()
 
@@ -377,8 +384,13 @@ class AdvisorService:
 
         # Phân tích có cấu trúc thành AdvisorGuidance
         guidance = self.parse_advisor_response(advisor_response)
+        hypo_mgr = HypothesisManager.load(advisor_dir / "hypotheses.json")
         if guidance.hypotheses:
-            state["active_hypothesis"] = guidance.hypotheses[0].statement
+            hypo_mgr.register(guidance.hypotheses)
+            active_h = hypo_mgr.get_active()
+            if active_h:
+                state["active_hypothesis"] = active_h.statement
+                state["active_hypothesis_id"] = active_h.id
             hypo_node = recorder.record_event(
                 event_type="hypothesis",
                 actor="advisor",
@@ -388,6 +400,12 @@ class AdvisorService:
                 status="active",
             )
             state["active_hypothesis_node_id"] = hypo_node.node_id
+        hypo_mgr.save(advisor_dir / "hypotheses.json")
+
+        # Ghi nhận experiments được đề xuất vào ExperimentLedger
+        ledger = ExperimentLedger(advisor_dir)
+        for exp in guidance.experiments:
+            ledger.append(exp)
 
         # Cập nhật state.json
         state["iteration"] = state.get("iteration", 0) + 1
@@ -442,10 +460,20 @@ class AdvisorService:
         guidance = self.parse_advisor_response(response_text)
         state_file = advisor_dir / "state.json"
         state = json.loads(state_file.read_text(encoding="utf-8")) if state_file.is_file() else {}
+        hypo_mgr = HypothesisManager.load(advisor_dir / "hypotheses.json")
         if guidance.hypotheses:
-            state["active_hypothesis"] = guidance.hypotheses[0].statement
+            hypo_mgr.register(guidance.hypotheses)
+            active_h = hypo_mgr.get_active()
+            if active_h:
+                state["active_hypothesis"] = active_h.statement
+                state["active_hypothesis_id"] = active_h.id
             state["iteration"] = state.get("iteration", 0) + 1
             state_file.write_text(json.dumps(state, indent=2, ensure_ascii=False), encoding="utf-8")
+        hypo_mgr.save(advisor_dir / "hypotheses.json")
+
+        ledger = ExperimentLedger(advisor_dir)
+        for exp in guidance.experiments:
+            ledger.append(exp)
 
         if guidance.validation_error:
             adv_status = "ERROR"
@@ -512,22 +540,43 @@ class AdvisorService:
         state = json.loads(state_file.read_text(encoding="utf-8"))
         status_clean = status.upper().strip()
 
-        # 1. Ghi nhận vào experiments.jsonl
-        exp_entry = {
-            "id": experiment_id,
-            "timestamp": datetime.datetime.now().isoformat(),
-            "hypothesis": state.get("active_hypothesis"),
-            "actions": actions,
-            "observed": observed,
-            "status": status_clean,
-            "diff": diff or "",
-            "evidence": evidence or "",
-            "open_questions": open_questions or "",
-        }
-        with open(advisor_dir / "experiments.jsonl", "a", encoding="utf-8") as ef:
-            ef.write(json.dumps(exp_entry, ensure_ascii=False) + "\n")
+        # 1. Ghi nhận vào ExperimentLedger (Canonical History Writer)
+        ledger = ExperimentLedger(advisor_dir)
+        existing_exp = ledger.get(experiment_id)
+        if existing_exp is None:
+            existing_exp = Experiment(
+                experiment_id=experiment_id,
+                hypothesis_id=state.get("active_hypothesis_id") or "H1",
+                intent=actions[:100] if actions else "Execute solver action",
+                actual_evidence=[evidence] if evidence else [],
+            )
 
-        # 2. Cập nhật DiscoveryTree (DAG)
+        if isinstance(experiment_id_or_result, ExecutionResult):
+            exec_res = experiment_id_or_result
+        else:
+            exec_res = ExecutionResult(
+                experiment_id=experiment_id,
+                status=status_clean if status_clean in ["CONFIRMED", "REJECTED", "INCONCLUSIVE", "FLAG_FOUND"] else "INCONCLUSIVE",
+                observed=observed or "",
+                evidence=[evidence] if evidence else [],
+                stderr_tail=diff,
+            )
+
+        evaluation = EvidenceEvaluator.evaluate(existing_exp, exec_res)
+        recorded_exp = ledger.record_result(
+            experiment_id=experiment_id,
+            evaluation=evaluation,
+            execution_result=exec_res,
+        )
+
+        # 2. Cập nhật HypothesisManager
+        hypo_mgr = HypothesisManager.load(advisor_dir / "hypotheses.json")
+        target_hypo_id = state.get("active_hypothesis_id") or existing_exp.hypothesis_id
+        updated_hypo = hypo_mgr.apply_evaluation(target_hypo_id, evaluation)
+        hypo_mgr.save(advisor_dir / "hypotheses.json")
+        status_clean = evaluation.outcome.upper()
+
+        # 3. Cập nhật DiscoveryTree (DAG Exploration Visualization)
         recorder = EventRecorder(advisor_dir)
         parent_node_id = state.get("active_hypothesis_node_id") or state.get("last_node_id") or recorder.tree.root_id
 
@@ -553,15 +602,15 @@ class AdvisorService:
         )
         state["last_node_id"] = obs_node.node_id
 
-        # 3. Quản lý Hypothesis Budget & Cắt Tỉa Nhánh Chết (Pruning)
+        # 4. Quản lý Hypothesis Budget & Cắt Tỉa Nhánh Chết (Pruning)
         budget = state.setdefault("hypothesis_budget", {
             "max_failures_per_hypothesis": self.policy.stopping.get("max_consecutive_failures", 2),
             "current_failures": 0,
             "total_consultations": 0,
         })
+        budget["current_failures"] = updated_hypo.failure_count
 
         if status_clean == "REJECTED":
-            budget["current_failures"] += 1
             # Cắt tỉa nhánh nếu chính sách yêu cầu
             if self.policy.branching.get("prune_dead_ends", True):
                 recorder.tree.prune_subtree(act_node.node_id, reason=diff or observed)
@@ -569,13 +618,13 @@ class AdvisorService:
                 # Rollback last_node_id về cha của nhánh bị cắt tỉa
                 state["last_node_id"] = parent_node_id
 
-            if budget["current_failures"] >= budget.get("max_failures_per_hypothesis", 2):
+            if budget["current_failures"] >= budget.get("max_failures_per_hypothesis", 2) or hypo_mgr.recommend_pivot():
                 state["status"] = "stalled"
                 console.print(
                     f"[bold red]🚨 HYPOTHESIS BUDGET EXCEEDED! Đã thất bại {budget['current_failures']} lần liên tiếp.[/bold red]\n"
                     f"[yellow]Khuyến nghị: Chạy `./ctf advisor escalate {challenge_id}` để kích hoạt Strategic Assumption Challenge & Reframe![/yellow]"
                 )
-        elif status_clean == "CONFIRMED":
+        elif status_clean in ["CONFIRMED", "FLAG_FOUND"]:
             budget["current_failures"] = 0
             state["status"] = "testing_hypothesis"
             act_node.status = "confirmed"
