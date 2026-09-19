@@ -162,3 +162,25 @@ Sau khi giải thành công một bài thi:
 3. Kiểm tra tính trùng lặp:
    * Nếu kỹ thuật đã tồn tại (ví dụ: `web.path-traversal.user-controlled-path`): bổ sung thêm trường hợp mới (Node.js, Python, Go) thay vì tạo thẻ rác.
    * Nếu kỹ thuật mới: tạo nhánh `knowledge/candidate-<slug>` và mở PR an toàn lên `v0_ctf_knowledge`.
+
+---
+
+## 6. Vòng Đời Tác Chiến Giải Đấu & Tiêu Hủy Tự Động (Tournament Lifecycle & Zero-Bloat Teardown)
+
+### 6.1. Ranh Giới Thực Thi: Anti-IDE & OpenCode
+- **Anti-IDE** và **OpenCode** giữ vai trò **Executors**: Chịu trách nhiệm trực tiếp tương tác hệ thống tệp, chạy subprocess / sandbox container, tương tác công cụ phân tích tĩnh/động (IDA Pro MCP, GDB), và nộp cờ tự động.
+- **Strategic Advisor (ChatGPT Web)**: Giữ vai trò Cố vấn chiến lược độc lập, ban hành `ExecutionProposal` và phản biện bế tắc giả định.
+
+### 6.2. Quy Trình Vận Hành Giải Đấu Tự Động
+1. **Khởi tạo Workspace**: Với mỗi giải CTF mới, tạo thư mục mang tên giải đấu trong repo (`mkdir <tournament_name> && cd <tournament_name>`).
+2. **Nạp Credentials**: Cung cấp refresh token / API token / session cookie cho Agent bằng lệnh:
+   `ctf env set -u "<URL>" -t "<TOKEN>" -c "<COOKIE>"`
+3. **Kích hoạt Chu Trình Tự Động**: Chạy `ctf auto` để Anti-IDE và OpenCode tự động đồng bộ bài, nạp bài lười, suy luận giả thuyết và giải bài khép kín.
+
+### 6.3. Sàng Lọc Tri Thức & Tiêu Hủy Hoàn Toàn Cuối Giải
+Khi giải đấu kết thúc:
+1. **Chắt lọc tri thức (Knowledge Distillation)**: Anti-IDE quét toàn bộ cây khám phá và lịch sử thực nghiệm, trích xuất Winning Paths, kỹ thuật mới, và anti-patterns, đóng gói thành Thẻ Tri Thức và đẩy lên `DangGPhuc/v0_ctf_knowledge`.
+2. **Tiêu hủy hoàn toàn không để lại rác**:
+   - Dọn sạch toàn bộ file nhị phân đính kèm, logs, file tạm, scratchpad solver.
+   - **Xóa bỏ hoàn toàn chính thư mục giải đấu `<tournament_name>/`** (`rm -rf <tournament_name>`).
+   - Đảm bảo repo `v0_ctf_solver` luôn giữ nguyên tắc **Zero Permanent Event Bloat**.
