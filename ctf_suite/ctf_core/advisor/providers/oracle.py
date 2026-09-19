@@ -58,12 +58,18 @@ class OracleAdvisorProvider(BaseAdvisorProvider):
             if res.returncode == 0 and res.stdout.strip():
                 stdout_text = res.stdout.strip()
                 guidance = GuidanceParser.parse(stdout_text)
+                new_session = None
+                m = re.search(r"session[:\s]+([a-zA-Z0-9_\-]+)", stdout_text, re.IGNORECASE)
+                if m:
+                    new_session = m.group(1)
                 console.print("[bold green]✔ Đã nhận phản hồi chiến lược từ ChatGPT Web qua Oracle![/bold green]")
                 return AdvisorResult(
                     status="READY",
                     guidance=guidance,
                     provider="chatgpt-web",
                     message="Oracle consultation succeeded.",
+                    session_id=new_session or oracle_session,
+                    raw_response=stdout_text,
                 )
             else:
                 err_msg = res.stderr.strip()[:200]
