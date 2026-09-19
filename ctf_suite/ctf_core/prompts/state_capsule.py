@@ -18,6 +18,7 @@ class StateCapsule:
     active_hypothesis: Optional[str] = None
     active_hypothesis_id: Optional[str] = None
     active_hypothesis_statement: Optional[str] = None
+    pivot_required: bool = False
     rejected_hypotheses: List[Dict[str, str]] = field(default_factory=list)
     recent_progress: List[Dict[str, str]] = field(default_factory=list)
     unresolved_questions: List[str] = field(default_factory=list)
@@ -42,6 +43,12 @@ class StateCapsule:
         if self.active_hypothesis_id and self.active_hypothesis_id not in active_display:
             active_display = f"[{self.active_hypothesis_id}] {active_display}"
         sections.append(f"\n#### 2. Active Hypothesis (Giả thuyết đang tập trung):\n- **{active_display}**")
+
+        if self.pivot_required:
+            sections.append(
+                "\n> ⚠️ **PIVOT REQUIRED**: Giả thuyết hiện tại đã bị bác bỏ hoặc cạn kiệt budget kiểm chứng.\n"
+                "> Advisor BẮT BUỘC phải đề xuất một giả thuyết thay thế mới (Alternative Hypothesis), KHÔNG ĐƯỢC lặp lại hướng đi đã thất bại!"
+            )
 
 
         # 3. Rejected Hypotheses

@@ -39,6 +39,16 @@ from ..prompts import (
     CTFTemplates,
     StateCapsule,
 )
+from ..experiments import (
+    HypothesisManager,
+    ExperimentLedger,
+    EvidenceEvaluator,
+    ExperimentEvaluation,
+    Experiment,
+    ExperimentProposal,
+    UnknownExperimentError,
+    UnknownHypothesisError,
+)
 
 console = Console()
 
@@ -301,6 +311,60 @@ class AdvisorService:
             "EXPECTED_RESULTS, REQUESTED_EVIDENCE, STOP_CONDITION."
         )
 
+    def _create_canonical_experiment(
+        self,
+        advisor_dir: Path,
+        state: Dict[str, Any],
+        guidance: AdvisorGuidance,
+    ) -> Optional[Experiment]:
+        """
+        Creates a system-owned canonical experiment in ExperimentLedger from an Advisor proposal.
+        The Advisor must NOT own or choose the canonical experiment ID.
+        """
+        ledger = ExperimentLedger(advisor_dir)
+        canonical_exp = None
+        if guidance.experiment and guidance.experiment.execution_plan:
+            canonical_exp = ledger.create(
+                hypothesis_id=guidance.experiment.hypothesis_id,
+                intent=guidance.experiment.intent,
+                actions=guidance.experiment.execution_plan,
+                expected_evidence=guidance.experiment.expected_evidence,
+                contradicting_evidence=guidance.experiment.contradicting_evidence,
+            )
+            state["active_experiment_id"] = canonical_exp.experiment_id
+        elif guidance.execution_plan:
+            hypo_id = guidance.hypotheses[0].id if guidance.hypotheses else (state.get("active_hypothesis_id") or "H1")
+            canonical_exp = ledger.create(
+                hypothesis_id=hypo_id,
+                intent=guidance.assessment or "Execute solver plan",
+                actions=guidance.execution_plan,
+                expected_evidence=guidance.requested_evidence,
+            )
+            state["active_experiment_id"] = canonical_exp.experiment_id
+        else:
+            state["active_experiment_id"] = None
+
+        return canonical_exp
+
+    def _is_executable_guidance(
+        self,
+        guidance: AdvisorGuidance,
+        canonical_exp: Optional[Experiment],
+    ) -> bool:
+        """
+        Checks if the advisor guidance constitutes an executable structured experiment:
+        1. No JSON/validation error
+        2. Structured payload
+        3. A canonical experiment exists in ledger
+        4. The canonical experiment contains at least one typed ExecutionAction
+        """
+        return (
+            guidance.validation_error is None
+            and guidance.is_structured
+            and canonical_exp is not None
+            and bool(canonical_exp.actions_to_run)
+        )
+
     def consult(self, challenge_id: Any, extra_instruction: Optional[str] = None) -> Dict[str, Any]:
         """
         Thực hiện tham vấn Strategic Advisor (ChatGPT Web qua Oracle):
@@ -377,8 +441,13 @@ class AdvisorService:
 
         # Phân tích có cấu trúc thành AdvisorGuidance
         guidance = self.parse_advisor_response(advisor_response)
+        hypo_mgr = HypothesisManager.load(advisor_dir / "hypotheses.json")
         if guidance.hypotheses:
-            state["active_hypothesis"] = guidance.hypotheses[0].statement
+            hypo_mgr.register(guidance.hypotheses)
+            active_h = hypo_mgr.get_active()
+            if active_h:
+                state["active_hypothesis"] = active_h.statement
+                state["active_hypothesis_id"] = active_h.id
             hypo_node = recorder.record_event(
                 event_type="hypothesis",
                 actor="advisor",
@@ -388,6 +457,11 @@ class AdvisorService:
                 status="active",
             )
             state["active_hypothesis_node_id"] = hypo_node.node_id
+        hypo_mgr.save(advisor_dir / "hypotheses.json")
+
+        # Ghi nhận experiment được đề xuất vào ExperimentLedger trước khi thực thi
+        canonical_exp = self._create_canonical_experiment(advisor_dir, state, guidance)
+        canonical_exp_id = canonical_exp.experiment_id if canonical_exp else None
 
         # Cập nhật state.json
         state["iteration"] = state.get("iteration", 0) + 1
@@ -401,6 +475,10 @@ class AdvisorService:
         if guidance.validation_error:
             adv_status = "ERROR"
             adv_msg = f"Advisor structured JSON payload invalid: {guidance.validation_error}"
+        elif not self._is_executable_guidance(guidance, canonical_exp):
+            adv_status = "ERROR"
+            adv_msg = "Advisor response contains no executable structured experiment."
+            canonical_exp_id = None
         else:
             adv_status = "READY"
             adv_msg = "Guidance received from strategic advisor"
@@ -420,6 +498,7 @@ class AdvisorService:
             "guidance_file": guidance_file,
             "guidance": guidance,
             "active_hypothesis": state.get("active_hypothesis"),
+            "active_experiment_id": canonical_exp_id,
             "status": adv_status,
             "advisor_result": adv_result,
         }
@@ -442,14 +521,26 @@ class AdvisorService:
         guidance = self.parse_advisor_response(response_text)
         state_file = advisor_dir / "state.json"
         state = json.loads(state_file.read_text(encoding="utf-8")) if state_file.is_file() else {}
+        hypo_mgr = HypothesisManager.load(advisor_dir / "hypotheses.json")
         if guidance.hypotheses:
-            state["active_hypothesis"] = guidance.hypotheses[0].statement
+            hypo_mgr.register(guidance.hypotheses)
+            active_h = hypo_mgr.get_active()
+            if active_h:
+                state["active_hypothesis"] = active_h.statement
+                state["active_hypothesis_id"] = active_h.id
             state["iteration"] = state.get("iteration", 0) + 1
             state_file.write_text(json.dumps(state, indent=2, ensure_ascii=False), encoding="utf-8")
+        hypo_mgr.save(advisor_dir / "hypotheses.json")
+
+        canonical_exp = self._create_canonical_experiment(advisor_dir, state, guidance)
+        state_file.write_text(json.dumps(state, indent=2, ensure_ascii=False), encoding="utf-8")
 
         if guidance.validation_error:
             adv_status = "ERROR"
             adv_msg = f"Manual guidance JSON payload invalid: {guidance.validation_error}"
+        elif not self._is_executable_guidance(guidance, canonical_exp):
+            adv_status = "ERROR"
+            adv_msg = "Manual guidance contains no executable structured experiment."
         else:
             adv_status = "READY"
             adv_msg = "Manual guidance imported and parsed successfully"
@@ -512,22 +603,40 @@ class AdvisorService:
         state = json.loads(state_file.read_text(encoding="utf-8"))
         status_clean = status.upper().strip()
 
-        # 1. Ghi nhận vào experiments.jsonl
-        exp_entry = {
-            "id": experiment_id,
-            "timestamp": datetime.datetime.now().isoformat(),
-            "hypothesis": state.get("active_hypothesis"),
-            "actions": actions,
-            "observed": observed,
-            "status": status_clean,
-            "diff": diff or "",
-            "evidence": evidence or "",
-            "open_questions": open_questions or "",
-        }
-        with open(advisor_dir / "experiments.jsonl", "a", encoding="utf-8") as ef:
-            ef.write(json.dumps(exp_entry, ensure_ascii=False) + "\n")
+        # 1. Ghi nhận vào ExperimentLedger (Canonical History Writer)
+        ledger = ExperimentLedger(advisor_dir)
+        existing_exp = ledger.get(experiment_id)
+        if existing_exp is None:
+            raise UnknownExperimentError(
+                f"ExecutionResult references unknown experiment '{experiment_id}'. Cannot evaluate or mutate hypotheses."
+            )
 
-        # 2. Cập nhật DiscoveryTree (DAG)
+        if isinstance(experiment_id_or_result, ExecutionResult):
+            exec_res = experiment_id_or_result
+        else:
+            exec_res = ExecutionResult(
+                experiment_id=experiment_id,
+                status=status_clean if status_clean in ["CONFIRMED", "REJECTED", "INCONCLUSIVE", "FLAG_FOUND"] else "INCONCLUSIVE",
+                observed=observed or "",
+                evidence=[evidence] if evidence else [],
+                stderr_tail=diff,
+            )
+
+        evaluation = EvidenceEvaluator.evaluate(existing_exp, exec_res)
+        recorded_exp = ledger.record_result(
+            experiment_id=experiment_id,
+            evaluation=evaluation,
+            execution_result=exec_res,
+        )
+
+        # 2. Cập nhật HypothesisManager
+        hypo_mgr = HypothesisManager.load(advisor_dir / "hypotheses.json")
+        target_hypo_id = existing_exp.hypothesis_id
+        updated_hypo = hypo_mgr.apply_evaluation(target_hypo_id, evaluation)
+        hypo_mgr.save(advisor_dir / "hypotheses.json")
+        status_clean = evaluation.outcome.upper()
+
+        # 3. Cập nhật DiscoveryTree (DAG Exploration Visualization)
         recorder = EventRecorder(advisor_dir)
         parent_node_id = state.get("active_hypothesis_node_id") or state.get("last_node_id") or recorder.tree.root_id
 
@@ -553,34 +662,69 @@ class AdvisorService:
         )
         state["last_node_id"] = obs_node.node_id
 
-        # 3. Quản lý Hypothesis Budget & Cắt Tỉa Nhánh Chết (Pruning)
+        # 4. Quản lý Hypothesis Budget & Cắt Tỉa Nhánh Chết (Pruning)
         budget = state.setdefault("hypothesis_budget", {
             "max_failures_per_hypothesis": self.policy.stopping.get("max_consecutive_failures", 2),
             "current_failures": 0,
             "total_consultations": 0,
         })
+        active_h = hypo_mgr.get_active()
+        active_id = state.get("active_hypothesis_id") or (active_h.id if active_h else target_hypo_id)
+        if not state.get("active_hypothesis_id") and active_id:
+            state["active_hypothesis_id"] = active_id
+            if active_h and not state.get("active_hypothesis"):
+                state["active_hypothesis"] = active_h.statement
 
+        is_active_target = (target_hypo_id == active_id)
+        if is_active_target:
+            budget["current_failures"] = updated_hypo.failure_count
+
+        pivot_needed = False
         if status_clean == "REJECTED":
-            budget["current_failures"] += 1
-            # Cắt tỉa nhánh nếu chính sách yêu cầu
-            if self.policy.branching.get("prune_dead_ends", True):
+            if is_active_target and self.policy.branching.get("prune_dead_ends", True):
                 recorder.tree.prune_subtree(act_node.node_id, reason=diff or observed)
                 recorder.tree.save(recorder.tree_file)
-                # Rollback last_node_id về cha của nhánh bị cắt tỉa
                 state["last_node_id"] = parent_node_id
-
-            if budget["current_failures"] >= budget.get("max_failures_per_hypothesis", 2):
-                state["status"] = "stalled"
-                console.print(
-                    f"[bold red]🚨 HYPOTHESIS BUDGET EXCEEDED! Đã thất bại {budget['current_failures']} lần liên tiếp.[/bold red]\n"
-                    f"[yellow]Khuyến nghị: Chạy `./ctf advisor escalate {challenge_id}` để kích hoạt Strategic Assumption Challenge & Reframe![/yellow]"
-                )
-        elif status_clean == "CONFIRMED":
-            budget["current_failures"] = 0
-            state["status"] = "testing_hypothesis"
+            if is_active_target:
+                pivot_needed = True
+        elif status_clean == "INCONCLUSIVE":
+            max_fails = budget.get("max_failures_per_hypothesis", 2)
+            if is_active_target and (updated_hypo.failure_count >= max_fails or hypo_mgr.recommend_pivot()):
+                pivot_needed = True
+        elif status_clean in ["CONFIRMED", "FLAG_FOUND"]:
+            if is_active_target:
+                budget["current_failures"] = 0
+                state["status"] = "testing_hypothesis"
+                state["pivot_required"] = False
             act_node.status = "confirmed"
             obs_node.status = "confirmed"
             recorder.tree.save(recorder.tree_file)
+
+        if pivot_needed:
+            # Deterministic activation of registered proposed alternative hypothesis
+            alternative = None
+            for h in hypo_mgr.list_all():
+                if h.id != target_hypo_id and h.status == "proposed":
+                    alternative = h
+                    break
+            if alternative:
+                hypo_mgr.activate(alternative.id)
+                hypo_mgr.save(advisor_dir / "hypotheses.json")
+                state["active_hypothesis"] = alternative.statement
+                state["active_hypothesis_id"] = alternative.id
+                state["pivot_required"] = False
+                state["status"] = "testing_hypothesis"
+                budget["current_failures"] = alternative.failure_count
+                console.print(
+                    f"[yellow]🔀 Pivoted active hypothesis to registered alternative {alternative.id}: {alternative.statement}[/yellow]"
+                )
+            else:
+                state["pivot_required"] = True
+                state["status"] = "stalled"
+                console.print(
+                    f"[bold red]🚨 HYPOTHESIS BUDGET EXCEEDED / REJECTED! Đã thất bại {budget['current_failures']} lần liên tiếp và không có giả thuyết thay thế.[/bold red]\n"
+                    f"[yellow]Khuyến nghị: Chạy `./ctf advisor escalate {challenge_id}` để kích hoạt Strategic Assumption Challenge & Reframe![/yellow]"
+                )
 
         # 4. Tạo Execution Report theo template
         report_text = self._format_execution_report(
@@ -616,6 +760,7 @@ class AdvisorService:
             "status": status_clean,
             "budget": budget,
             "is_stalled": state.get("status") == "stalled",
+            "pivot_required": state.get("pivot_required", False),
             "report_file": report_file,
             "consult_res": consult_res,
         }

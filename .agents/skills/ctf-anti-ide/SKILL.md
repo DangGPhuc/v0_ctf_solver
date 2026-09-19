@@ -91,3 +91,43 @@ Khi giải một bài tập, Agent tuân thủ cấu trúc tạm thời trong `.
 ```
 
 Toàn bộ thư mục `.runtime/` là tạm thời (ephemeral) và được dọn dẹp sạch sẽ sau khi giải xong bài.
+
+---
+
+## 4. Quy Chuẩn Vận Hành Giải Đấu & Vòng Đời Tự Hủy (Tournament Lifecycle & Teardown Protocol)
+
+### 4.1. Vai Trò Người Thực Thi (Executors: Anti-IDE & OpenCode)
+- **Anti-IDE** và **OpenCode** là **Executors chính thức**: trực tiếp quản lý terminal, filesystem, sandbox container, và các công cụ dịch ngược (IDA Pro MCP).
+- **Strategic Advisor (ChatGPT Web)**: Cố vấn chiến lược, ban hành kế hoạch thực nghiệm có cấu trúc (`ExecutionAction`).
+
+### 4.2. Quy Trình Khởi Động Giải Đấu Mới
+Khi tham gia một giải đấu CTF mới:
+1. **Tạo thư mục giải đấu**: Tạo thư mục mang tên giải đấu ngay trong repository (ví dụ: `<tournament_name>/`).
+2. **Truy cập thư mục**: `cd <tournament_name>`
+3. **Cung cấp Refresh Token / Credentials**: Cung cấp token phiên hoặc refresh token của giải đấu cho Agent:
+   ```bash
+   ctf env set -u "https://ctf.example.com" -c "session=..." -t "<REFRESH_TOKEN>"
+   ```
+4. **Kích hoạt Chu Trình Tự Động (Autonomous Loop)**:
+   ```bash
+   ctf auto --max-iter 10 --executor container
+   ```
+   Anti-IDE / OpenCode sẽ tự động:
+   - Đồng bộ danh mục challenge (`ctf pull`).
+   - Nạp bài lười (`lazy materialization`) khi giải.
+   - Bóc tách `ChallengeFingerprint` và truy xuất Thẻ Tri Thức từ `v0_ctf_knowledge`.
+   - Tham vấn Cố vấn chiến lược tạo `ExperimentProposal` và nhận `EXP-xxx` chuẩn tắc.
+   - Chạy thực nghiệm cách ly, đánh giá bằng chứng, và nộp cờ ngay khi phát hiện (`ctf submit`).
+
+### 4.3. Quy Trình Sàng Lọc Tri Thức & Xóa Sạch Cuối Giải (Post-Tournament Distillation & Zero-Bloat Teardown)
+Khi giải đấu kết thúc:
+1. **Sàng Lọc Tự Động (Knowledge Distillation)**:
+   Anti-IDE kích hoạt chu trình rà soát toàn bộ cây khám phá (`DiscoveryTree`):
+   - Trích xuất Winning Paths, kỹ thuật khai thác mới, và các anti-patterns đã xác thực.
+   - Biên dịch thành các **Thẻ Tri Thức (Technique Cards)** và writeups cô đọng.
+   - Xuất bản lên kho tri thức ngoại vi `DangGPhuc/v0_ctf_knowledge` (qua PR an toàn hoặc outbox staging).
+2. **Tiêu Hủy Tuyệt Đối (Complete Folder Teardown)**:
+   - Dọn dẹp sạch toàn bộ file nhị phân đính kèm, logs, micro-PoCs, scratchpads.
+   - **Xóa bỏ hoàn toàn chính thư mục giải đấu `<tournament_name>/`** (`rm -rf <tournament_name>`).
+   - Đảm bảo repository `v0_ctf_solver` luôn giữ nguyên tắc **Zero Permanent Event Bloat**: chỉ lưu trữ engine và agent skills, không bao giờ phình to theo thời gian.
+

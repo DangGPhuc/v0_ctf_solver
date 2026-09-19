@@ -92,7 +92,10 @@ class ContainerExecutor:
         work_dir = Path(challenge_context.get("work_dir", ".")).resolve()
         input_dir = work_dir.parent / "input"
         iteration = challenge_context.get("iteration", 1)
-        experiment_id = f"EXP-{iteration:03d}"
+        experiment_id = (
+            challenge_context.get("experiment_id")
+            or f"EXP-{iteration:03d}"
+        )
 
         # 1. Engine availability check
         if not self.engine:

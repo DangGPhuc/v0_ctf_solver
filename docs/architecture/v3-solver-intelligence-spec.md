@@ -80,52 +80,61 @@ class ChallengeFingerprint(BaseModel):
 ### 3.2. Vòng Lặp Thực Nghiệm Dựa Trên Bằng Chứng (Evidence-Driven Loop)
 Thay vì để mô hình viết code khai thác ngay từ đầu, hệ thống ép buộc quy trình suy luận khoa học:
 
-```
-Quan sát (Observation)
-       │
-       ▼
-Giả thuyết (Hypothesis)
-       │
-       ▼
-Bằng chứng mong đợi (Expected Evidence)
-       │
-       ▼
-Thực nghiệm định kiểu (Typed ExecutionAction)
-       │
-       ▼
-Thực thi Sandbox (Container / Restricted Tool)
-       │
-       ▼
-Thu thập & Đánh giá Bằng chứng (Evidence Evaluator)
-       │
-       ├────────────────────────┐
-       ▼                        ▼
- [Bác bỏ / Thất bại]      [Xác nhận]
-       │                        │
-       ▼                        ▼
- Đổi hướng (Pivot)         Tiếp tục giả thuyết tiếp theo
- (Hoặc PAL Escalation)         hoặc Tạo Exploit hoàn chỉnh
+```text
+Fingerprint
+    ↓
+Knowledge Context
+    ↓
+Advisor
+    ↓
+Hypothesis
+    ↓
+Experiment
+    ↓
+Typed Execution
+    ↓
+Evidence
+    ↓
+Evaluation
+├── Confirm
+├── Reject
+└── Inconclusive
+    ↓
+Pivot
 ```
 
-### 3.3. Hợp Đồng Dữ Liệu `Hypothesis` & `Experiment`
+### 3.3. Ranh Giới Trách Nhiệm Tách Bạch Tuyệt Đối (Phase 1 Invariants)
+- **Advisor**: Đề xuất giả thuyết (`Hypothesis`) và thực nghiệm kiểm chứng (`Experiment`). KHÔNG trực tiếp thực thi tool hay quyết định tính chân lý của giả thuyết.
+- **HypothesisManager**: Theo dõi vòng đời lý luận (`proposed -> active -> confirmed / rejected / inconclusive`). KHÔNG chạy tool, KHÔNG gọi platform, KHÔNG gọi LLM.
+- **ExperimentLedger**: Nguồn ghi chép duy nhất (Single Canonical Writer) cho toàn bộ lịch sử thực nghiệm (`.advisor/experiments.jsonl`). Tự phục hồi khi gặp dòng lỗi.
+- **Executor (RestrictedLocal / Container)**: Thực thi các hành động định kiểu an toàn (`ExecutionAction`). KHÔNG quyết định kết quả giả thuyết.
+- **EvidenceEvaluator**: Đánh giá kết quả thực nghiệm hoàn toàn tất định (Deterministic, NO LLM). Execution failure/timeout dẫn tới `INCONCLUSIVE`, tuyệt đối KHÔNG ngộ nhận thành `REJECTED`.
+- **DiscoveryTree**: Trực quan hóa cây không gian tìm kiếm (DAG Exploration Visualization).
+
+### 3.4. Hợp Đồng Dữ Liệu `Hypothesis` & `Experiment`
 ```python
 class Hypothesis(BaseModel):
-    id: str                                                  # e.g., "H1"
-    statement: str                                           # "Stack overflow reaches saved RIP"
-    rationale: str                                           # "main reads 512B into 64B buffer without canary"
-    status: Literal["proposed", "active", "confirmed", "rejected", "stalled"] = "proposed"
+    id: str = "H1"
+    statement: str
     confidence: float = 0.5
-    experiments_run: int = 0
+    rationale: str = ""
+    status: Literal["proposed", "active", "confirmed", "rejected", "inconclusive"] = "proposed"
+    attempts: int = 0
     failure_count: int = 0
+    supporting_evidence: List[str] = Field(default_factory=list)
+    contradicting_evidence: List[str] = Field(default_factory=list)
 
 class Experiment(BaseModel):
-    experiment_id: str                                       # e.g., "EXP-001"
-    hypothesis_id: str                                       # "H1"
-    intent: str                                              # "Send cyclic pattern to determine RIP offset"
-    action: ExecutionAction
-    expected_evidence: List[str]                             # ["RIP = 0x616161..."]
+    experiment_id: str
+    hypothesis_id: str
+    intent: str
+    action: Optional[ExecutionAction] = None
+    execution_plan: List[ExecutionAction] = Field(default_factory=list)
+    expected_evidence: List[str] = Field(default_factory=list)
+    contradicting_evidence: List[str] = Field(default_factory=list)
     actual_evidence: List[str] = Field(default_factory=list)
-    outcome: Literal["pending", "confirmed", "inconclusive", "failed", "flag_found"] = "pending"
+    outcome: Literal["pending", "confirmed", "rejected", "inconclusive", "failed", "flag_found"] = "pending"
+    reason: str = ""
 ```
 
 ---
@@ -153,3 +162,25 @@ Sau khi giải thành công một bài thi:
 3. Kiểm tra tính trùng lặp:
    * Nếu kỹ thuật đã tồn tại (ví dụ: `web.path-traversal.user-controlled-path`): bổ sung thêm trường hợp mới (Node.js, Python, Go) thay vì tạo thẻ rác.
    * Nếu kỹ thuật mới: tạo nhánh `knowledge/candidate-<slug>` và mở PR an toàn lên `v0_ctf_knowledge`.
+
+---
+
+## 6. Vòng Đời Tác Chiến Giải Đấu & Tiêu Hủy Tự Động (Tournament Lifecycle & Zero-Bloat Teardown)
+
+### 6.1. Ranh Giới Thực Thi: Anti-IDE & OpenCode
+- **Anti-IDE** và **OpenCode** giữ vai trò **Executors**: Chịu trách nhiệm trực tiếp tương tác hệ thống tệp, chạy subprocess / sandbox container, tương tác công cụ phân tích tĩnh/động (IDA Pro MCP, GDB), và nộp cờ tự động.
+- **Strategic Advisor (ChatGPT Web)**: Giữ vai trò Cố vấn chiến lược độc lập, ban hành `ExecutionProposal` và phản biện bế tắc giả định.
+
+### 6.2. Quy Trình Vận Hành Giải Đấu Tự Động
+1. **Khởi tạo Workspace**: Với mỗi giải CTF mới, tạo thư mục mang tên giải đấu trong repo (`mkdir <tournament_name> && cd <tournament_name>`).
+2. **Nạp Credentials**: Cung cấp refresh token / API token / session cookie cho Agent bằng lệnh:
+   `ctf env set -u "<URL>" -t "<TOKEN>" -c "<COOKIE>"`
+3. **Kích hoạt Chu Trình Tự Động**: Chạy `ctf auto` để Anti-IDE và OpenCode tự động đồng bộ bài, nạp bài lười, suy luận giả thuyết và giải bài khép kín.
+
+### 6.3. Sàng Lọc Tri Thức & Tiêu Hủy Hoàn Toàn Cuối Giải
+Khi giải đấu kết thúc:
+1. **Chắt lọc tri thức (Knowledge Distillation)**: Anti-IDE quét toàn bộ cây khám phá và lịch sử thực nghiệm, trích xuất Winning Paths, kỹ thuật mới, và anti-patterns, đóng gói thành Thẻ Tri Thức và đẩy lên `DangGPhuc/v0_ctf_knowledge`.
+2. **Tiêu hủy hoàn toàn không để lại rác**:
+   - Dọn sạch toàn bộ file nhị phân đính kèm, logs, file tạm, scratchpad solver.
+   - **Xóa bỏ hoàn toàn chính thư mục giải đấu `<tournament_name>/`** (`rm -rf <tournament_name>`).
+   - Đảm bảo repo `v0_ctf_solver` luôn giữ nguyên tắc **Zero Permanent Event Bloat**.

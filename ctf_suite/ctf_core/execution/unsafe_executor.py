@@ -22,7 +22,10 @@ class UnsafeLocalExecutor:
     def execute(self, challenge_context: Dict[str, Any], guidance: AdvisorGuidance) -> ExecutionResult:
         work_dir = Path(challenge_context.get("work_dir", ".")).resolve()
         iteration = challenge_context.get("iteration", 1)
-        experiment_id = f"EXP-{iteration:03d}"
+        experiment_id = (
+            challenge_context.get("experiment_id")
+            or f"EXP-{iteration:03d}"
+        )
 
         actions_performed: List[str] = []
         observed_logs: List[str] = []

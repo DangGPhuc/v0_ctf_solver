@@ -50,7 +50,7 @@ class ExecutionResultEvaluator:
                 except Exception:
                     pass
 
-        # 2. Evidence extraction
+        # 2. Evidence extraction (inspect complete pre-truncation output)
         if guidance:
             for req_ev in guidance.requested_evidence:
                 if req_ev and req_ev.lower() in combined_out.lower():
@@ -60,6 +60,12 @@ class ExecutionResultEvaluator:
                 if getattr(act_def, "expected_evidence", None):
                     if act_def.expected_evidence.lower() in combined_out.lower():
                         evidence_found.append(f"Observed expected evidence: '{act_def.expected_evidence}'")
+
+            exp_prop = getattr(guidance, "experiment", None)
+            if exp_prop and getattr(exp_prop, "expected_evidence", None):
+                for exp_ev in exp_prop.expected_evidence:
+                    if exp_ev and exp_ev.lower() in combined_out.lower():
+                        evidence_found.append(f"Observed expected evidence: '{exp_ev}'")
 
         # 3. Status determination
         if flag_candidates:
@@ -77,8 +83,13 @@ class ExecutionResultEvaluator:
         else:
             status = "REJECTED"
 
-        stdout_tail = stdout[-1500:] if stdout else ""
-        stderr_tail = stderr[-1500:] if stderr else ""
+        MAX_TAIL = 1500
+        stdout_truncated = len(stdout or "") > MAX_TAIL
+        stderr_truncated = len(stderr or "") > MAX_TAIL
+        output_complete = not (stdout_truncated or stderr_truncated)
+
+        stdout_tail = stdout[-MAX_TAIL:] if stdout else ""
+        stderr_tail = stderr[-MAX_TAIL:] if stderr else ""
         if error_message:
             stderr_tail = (stderr_tail + "\n" + error_message).strip()
 
@@ -104,4 +115,7 @@ class ExecutionResultEvaluator:
             flag_candidates=flag_candidates,
             stdout_tail=stdout_tail,
             stderr_tail=stderr_tail,
+            stdout_truncated=stdout_truncated,
+            stderr_truncated=stderr_truncated,
+            output_complete=output_complete,
         )

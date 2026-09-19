@@ -255,6 +255,17 @@ class ChallengeOrchestrator:
                 console.print(f"[bold red]❌ Advisor status is READY but no guidance object exists. Halting execution.[/bold red]")
                 return False
 
+            active_exp_id = (
+                consult_res.get("active_experiment_id")
+                if isinstance(consult_res, dict)
+                else getattr(consult_res, "active_experiment_id", None)
+            )
+
+            # Invariant: Autonomous execution REQUIRES a valid canonical experiment ID
+            if not active_exp_id:
+                console.print(f"[bold red]❌ Advisor status is READY but no canonical experiment ID was assigned. Halting execution.[/bold red]")
+                return False
+
             # Build challenge context for executor
             challenge_context = {
                 "challenge_id": cid,
@@ -263,12 +274,20 @@ class ChallengeOrchestrator:
                 "work_dir": work_dir,
                 "input_dir": input_dir,
                 "iteration": iteration,
+                "experiment_id": active_exp_id,
                 "connection_info": chall_obj.connection_info,
             }
 
             # Execute actions via ExecutorAdapter
             console.print(f"[cyan]⚙ Executing plan via {self.executor.__class__.__name__}...[/cyan]")
             exec_result: ExecutionResult = self.executor.execute(challenge_context, guidance)
+
+            # Invariant check: Fail closed if IDs unexpectedly differ
+            if active_exp_id and exec_result.experiment_id != active_exp_id:
+                raise RuntimeError(
+                    f"Orchestration invariant violation: ExecutionResult experiment_id '{exec_result.experiment_id}' "
+                    f"does not match canonical experiment_id '{active_exp_id}'."
+                )
 
             # Report execution results back to Advisor (closed loop ReAct)
             self.advisor.report_execution(cid, exec_result)

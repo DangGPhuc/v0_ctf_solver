@@ -65,37 +65,68 @@ class PromptCompiler:
                     confirmed_facts.append(line_str.lstrip("- "))
         confirmed_facts = confirmed_facts[:8]  # Giữ tối đa 8 facts then chốt
 
-        # 2. Trích xuất Rejected Hypotheses từ tree.json hoặc experiments.jsonl
+        # 2. Trích xuất Rejected Hypotheses từ hypotheses.json, tree.json hoặc experiments.jsonl
         rejected_hypotheses = []
+        hypo_file = advisor_dir / "hypotheses.json"
+        if hypo_file.is_file():
+            try:
+                hypo_data = json.loads(hypo_file.read_text(encoding="utf-8"))
+                for h in hypo_data.get("hypotheses", []):
+                    if h.get("status") == "rejected":
+                        rejected_hypotheses.append({
+                            "name": f"{h.get('id')}: {h.get('statement', '')[:40]}",
+                            "reason": "; ".join(h.get("contradicting_evidence", [])) or "Rejected by experiment evidence",
+                        })
+            except Exception:
+                pass
+
         tree_file = advisor_dir / "tree.json"
         if tree_file.is_file():
             try:
                 tree_data = json.loads(tree_file.read_text(encoding="utf-8"))
                 for nid, n in tree_data.get("nodes", {}).items():
                     if n.get("status") in ["rejected", "pruned"]:
-                        rejected_hypotheses.append({
-                            "name": n.get("name", nid),
-                            "reason": n.get("payload", {}).get("diff") or n.get("payload", {}).get("observed") or "Rejected",
-                        })
+                        name = n.get("name", nid)
+                        if not any(rh.get("name") == name for rh in rejected_hypotheses):
+                            rejected_hypotheses.append({
+                                "name": name,
+                                "reason": n.get("payload", {}).get("diff") or n.get("payload", {}).get("observed") or "Rejected",
+                            })
             except Exception:
                 pass
 
-        # 3. Trích xuất Recent Progress từ experiments.jsonl
+        # 3. Trích xuất Recent Progress từ ExperimentLedger (deduplicated canonical latest state)
         recent_progress = []
-        exp_file = advisor_dir / "experiments.jsonl"
-        if exp_file.is_file():
-            try:
-                lines = [l.strip() for l in exp_file.read_text(encoding="utf-8").splitlines() if l.strip()]
-                for l in lines[-max_recent:]:
-                    entry = json.loads(l)
-                    recent_progress.append({
-                        "id": entry.get("id", "EXP"),
-                        "status": entry.get("status", "UNKNOWN"),
-                        "actions": entry.get("actions", "")[:80],
-                        "observed": entry.get("observed", "")[:80],
-                    })
-            except Exception:
-                pass
+        try:
+            from ..experiments.ledger import ExperimentLedger
+            ledger = ExperimentLedger(advisor_dir)
+            recent_exps = ledger.recent(max_recent)
+            for exp in recent_exps:
+                actions_str = ", ".join([a.kind for a in exp.actions_to_run]) if exp.actions_to_run else "run_solver"
+                observed_str = "; ".join(exp.actual_evidence) if exp.actual_evidence else exp.reason
+                recent_progress.append({
+                    "id": exp.experiment_id,
+                    "hypothesis": exp.hypothesis_id,
+                    "intent": exp.intent,
+                    "status": exp.outcome.upper(),
+                    "actions": actions_str[:80],
+                    "observed": observed_str[:80],
+                })
+        except Exception:
+            exp_file = advisor_dir / "experiments.jsonl"
+            if exp_file.is_file():
+                try:
+                    lines = [l.strip() for l in exp_file.read_text(encoding="utf-8").splitlines() if l.strip()]
+                    for l in lines[-max_recent:]:
+                        entry = json.loads(l)
+                        recent_progress.append({
+                            "id": entry.get("id", "EXP"),
+                            "status": entry.get("status", "UNKNOWN"),
+                            "actions": entry.get("actions", "")[:80],
+                            "observed": entry.get("observed", "")[:80],
+                        })
+                except Exception:
+                    pass
 
         # 4. Trích xuất Retrieved Hints từ Thẻ Tri Thức tương tự (RetrievedKnowledgeContext hoặc dict)
         retrieved_hints = []
@@ -141,6 +172,7 @@ class PromptCompiler:
             active_hypothesis=active_h_stmt or active_h_val,
             active_hypothesis_id=active_h_id,
             active_hypothesis_statement=active_h_stmt,
+            pivot_required=bool(state.get("pivot_required", False)),
             rejected_hypotheses=rejected_hypotheses,
             recent_progress=recent_progress,
             unresolved_questions=[],

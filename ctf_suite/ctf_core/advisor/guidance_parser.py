@@ -2,7 +2,7 @@ import json
 import re
 from typing import List, Optional
 
-from ..models import Action, AdvisorGuidance, Hypothesis
+from ..models import Action, AdvisorGuidance, ExecutionAction, Experiment, ExperimentProposal, Hypothesis
 
 
 class GuidanceParser:
@@ -11,6 +11,7 @@ class GuidanceParser:
     Enforces the critical security invariant:
       - Only structured JSON execution plans are parsed into ExecutionAction objects.
       - Human-readable prose or text actions are NEVER converted into executable shell commands.
+      - The system (not the Advisor) owns experiment IDs and outcomes.
     """
 
     @classmethod
@@ -25,6 +26,84 @@ class GuidanceParser:
                 data = json.loads(json_match.group(1))
                 if isinstance(data, dict):
                     data["raw_text"] = text
+
+                    proposal: Optional[ExperimentProposal] = None
+
+                    # A. Structured 'experiment' object (Section 4 & 6)
+                    if "experiment" in data and isinstance(data["experiment"], dict):
+                        exp_raw = dict(data["experiment"])
+                        # Advisor does NOT own experiment_id or outcome
+                        exp_raw.pop("experiment_id", None)
+                        exp_raw.pop("id", None)
+                        exp_raw.pop("outcome", None)
+                        exp_raw.pop("actual_evidence", None)
+
+                        # Parse execution plan if present inside experiment
+                        if not exp_raw.get("execution_plan") and data.get("execution_plan"):
+                            exp_raw["execution_plan"] = data["execution_plan"]
+
+                        expected = exp_raw.get("expected_evidence", [])
+                        if isinstance(expected, str):
+                            expected = [expected] if expected else []
+                        exp_raw["expected_evidence"] = expected
+
+                        contra = exp_raw.get("contradicting_evidence", [])
+                        if isinstance(contra, str):
+                            contra = [contra] if contra else []
+                        exp_raw["contradicting_evidence"] = contra
+
+                        proposal = ExperimentProposal.model_validate(exp_raw)
+
+                    # B. Legacy 'experiments' list
+                    elif "experiments" in data and isinstance(data["experiments"], list) and data["experiments"]:
+                        first_exp = dict(data["experiments"][0])
+                        first_exp.pop("experiment_id", None)
+                        first_exp.pop("id", None)
+                        first_exp.pop("outcome", None)
+                        first_exp.pop("actual_evidence", None)
+                        proposal = ExperimentProposal.model_validate(first_exp)
+
+                    # C. Backward compatibility: legacy execution_plan without experiment block
+                    elif data.get("execution_plan"):
+                        # Target first declared hypothesis if available
+                        hypo_id = "H1"
+                        if data.get("hypotheses") and isinstance(data["hypotheses"], list) and data["hypotheses"]:
+                            first_h = data["hypotheses"][0]
+                            if isinstance(first_h, dict) and first_h.get("id"):
+                                hypo_id = str(first_h["id"])
+                        elif data.get("hypothesis_id"):
+                            hypo_id = str(data["hypothesis_id"])
+
+                        expected = data.get("expected_evidence", data.get("requested_evidence", []))
+                        if isinstance(expected, str):
+                            expected = [expected] if expected else []
+
+                        contra = data.get("contradicting_evidence", [])
+                        if isinstance(contra, str):
+                            contra = [contra] if contra else []
+
+                        proposal = ExperimentProposal(
+                            hypothesis_id=hypo_id,
+                            intent=data.get("intent", data.get("assessment", "Execute solver action")),
+                            execution_plan=[ExecutionAction.model_validate(a) for a in data["execution_plan"]],
+                            expected_evidence=expected,
+                            contradicting_evidence=contra,
+                        )
+
+                    if proposal:
+                        data["experiment"] = proposal.model_dump()
+                        if not data.get("execution_plan") and proposal.execution_plan:
+                            data["execution_plan"] = [a.model_dump() for a in proposal.execution_plan]
+                        if not data.get("experiments"):
+                            data["experiments"] = [{
+                                "experiment_id": "EXP-pending",
+                                "hypothesis_id": proposal.hypothesis_id,
+                                "intent": proposal.intent,
+                                "execution_plan": [a.model_dump() for a in proposal.execution_plan],
+                                "expected_evidence": proposal.expected_evidence,
+                                "contradicting_evidence": proposal.contradicting_evidence,
+                            }]
+
                     guidance = AdvisorGuidance.model_validate(data)
                     guidance.is_structured = True
                     return guidance

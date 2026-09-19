@@ -70,7 +70,32 @@ KNOWLEDGE_REF="main"
 KNOWLEDGE_OFFLINE=false
 ```
 
+### 4. Tournament Workflow (Anti-IDE & OpenCode Executors)
+
+When participating in a new CTF competition:
+
+1. **Create Tournament Folder**: Create a dedicated directory named after the tournament inside the repository:
+   ```bash
+   mkdir <tournament_name> && cd <tournament_name>
+   ```
+2. **Inject Credentials**: Pass the platform refresh token / session credentials to the Anti-IDE & OpenCode agents:
+   ```bash
+   ctf env set -u "https://ctf.target.com" -t "<REFRESH_TOKEN>" -c "session=..."
+   ```
+3. **Trigger Autonomous Solving Loop**:
+   ```bash
+   ctf auto --max-iter 10 --executor container
+   ```
+   Anti-IDE and OpenCode act as autonomous executors, pulling challenges, triaging primitives, generating typed experiments with Strategic Advisor, executing in isolated sandboxes, and submitting flags immediately.
+
+4. **Post-Tournament Distillation & Zero-Bloat Teardown**:
+   At the end of the competition, Anti-IDE triggers an automated distillation pass:
+   - Sifts through discovery trees, extracting winning exploit paths, novel techniques, and anti-patterns.
+   - Promotes reusable knowledge to the remote knowledge base (`DangGPhuc/v0_ctf_knowledge`) via Pull Request.
+   - **Completely removes the tournament folder** (`rm -rf <tournament_name>`) and ephemeral caches, ensuring the repository remains 100% clean with **Zero Permanent Event Bloat**.
+
 ---
+
 
 ## 🛠️ CLI Reference
 
