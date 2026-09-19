@@ -13,8 +13,10 @@ from ctf_core.models import (
     AdvisorGuidance,
     Hypothesis,
     Action,
+    ExecutionAction,
     ExecutionResult,
 )
+from ctf_core.experiments import ExperimentLedger, HypothesisManager
 from ctf_core.platforms.base import BasePlatform
 from ctf_core.runtime.manager import RuntimeManager
 from ctf_core.services.advisor_service import AdvisorService
@@ -85,14 +87,29 @@ class FakeAdvisor(AdvisorService):
 
     def consult(self, challenge_id: Any) -> Dict[str, Any]:
         self.consult_count += 1
+        chall_dir = self._find_chall_dir(challenge_id)
+        advisor_dir = chall_dir / ".advisor"
+        ledger = ExperimentLedger(advisor_dir)
+        canonical_exp = ledger.create(
+            hypothesis_id="H1",
+            intent="Challenge requires XOR inversion of buffer at 0x401000",
+            actions=[ExecutionAction(kind="run_solver", path="solve.py")],
+            expected_evidence=["Disassembled loop at 0x401000"],
+        )
+        hypo_mgr = HypothesisManager.load(advisor_dir / "hypotheses.json")
+        hypo_mgr.register([
+            Hypothesis(id="H1", statement="Key is single byte 0x5a"),
+            Hypothesis(id="H2", statement="Key is multi-byte rolling XOR"),
+        ])
+        hypo_mgr.save(advisor_dir / "hypotheses.json")
         guidance = AdvisorGuidance(
             assessment="Challenge requires XOR inversion of buffer at 0x401000",
             hypotheses=[
                 Hypothesis(id="H1", statement="Key is single byte 0x5a"),
                 Hypothesis(id="H2", statement="Key is multi-byte rolling XOR"),
             ],
-            next_actions=[
-                Action(type="command", command_or_task="python3 solve.py", expected_evidence="al = 0x5a")
+            execution_plan=[
+                ExecutionAction(kind="run_solver", path="solve.py")
             ],
             requested_evidence=["Disassembled loop at 0x401000"],
             stop_conditions=["Flag format matched"],
@@ -103,6 +120,7 @@ class FakeAdvisor(AdvisorService):
             "status": "READY",
             "guidance": guidance,
             "active_hypothesis": "Key is single byte 0x5a",
+            "active_experiment_id": canonical_exp.experiment_id,
         }
 
 
@@ -116,7 +134,7 @@ class FakeExecutor:
     def execute(self, challenge_context: Dict[str, Any], guidance: AdvisorGuidance) -> ExecutionResult:
         self.executed_contexts.append(challenge_context)
         return ExecutionResult(
-            experiment_id=f"EXP-{challenge_context.get('iteration', 1):03d}",
+            experiment_id=challenge_context.get("experiment_id") or f"EXP-{challenge_context.get('iteration', 1):03d}",
             status="FLAG_FOUND",
             actions=["XOR decode with key 0x5a"],
             observed="Decoded plaintext matched flag format",

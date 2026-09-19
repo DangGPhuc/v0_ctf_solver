@@ -108,19 +108,30 @@ class CTFTemplates:
             f"- Điều kiện Executor phải dừng lại báo cáo.\n"
             f"- Nhánh nào cần hủy bỏ ngay lập tức để tiết kiệm tài nguyên.\n\n"
             f"## 6. MACHINE-READABLE EXECUTION PLAN (MANDATORY JSON BLOCK)\n"
-            f"Cuối phản hồi, BẮT BUỘC đính kèm khối JSON định kiểu (Typed Execution Plan) để Executor tự động thực thi trong sandbox:\n"
+            f"Cuối phản hồi, BẮT BUỘC đính kèm khối JSON định kiểu (Typed Execution Plan & Experiment Proposal) để Executor tự động thực thi trong sandbox:\n"
             f"```json\n"
             f"{{\n"
-            f'  "assessment": "<tóm tắt 1 câu>",\n'
+            f'  "assessment": "<short assessment>",\n'
             f'  "hypotheses": [\n'
-            f'    {{"id": "H1", "statement": "<giả thuyết chính>", "confidence": 0.8, "rationale": "<lý do>"}}\n'
+            f'    {{"id": "H1", "statement": "<testable claim>", "confidence": 0.8, "rationale": "<why>"}},\n'
+            f'    {{"id": "H2", "statement": "<alternative>", "confidence": 0.5, "rationale": "<why>"}}\n'
             f'  ],\n'
-            f'  "execution_plan": [\n'
-            f'    {{"kind": "analysis_tool", "tool": "checksec", "argv": ["--file", "input:vuln"], "timeout": 15}},\n'
-            f'    {{"kind": "run_solver", "path": "solve.py", "argv": ["python3", "solve.py"], "timeout": 60}}\n'
-            f'  ],\n'
-            f'  "requested_evidence": ["<bằng chứng mong đợi>"],\n'
-            f'  "stop_conditions": ["<điều kiện dừng>"]\n'
+            f'  "experiment": {{\n'
+            f'    "hypothesis_id": "H1",\n'
+            f'    "intent": "<what exactly this experiment tests>",\n'
+            f'    "expected_evidence": [\n'
+            f'      "<observation that supports H1>"\n'
+            f'    ],\n'
+            f'    "contradicting_evidence": [\n'
+            f'      "<observation that directly contradicts H1>"\n'
+            f'    ],\n'
+            f'    "execution_plan": [\n'
+            f'      {{"kind": "analysis_tool", "tool": "checksec", "argv": ["checksec", "--file=input:vuln"], "timeout": 20}}\n'
+            f'    ]\n'
+            f'  }},\n'
+            f'  "stop_conditions": [\n'
+            f'    "<when executor should stop>"\n'
+            f'  ]\n'
             f"}}\n"
             f"```\n"
             f"Supported kinds: run_solver, run_python_file, run_sage_file, run_binary, analysis_tool, read_file, list_files.\n"

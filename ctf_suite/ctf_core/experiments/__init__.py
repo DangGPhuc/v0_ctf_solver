@@ -7,21 +7,25 @@ from ..models import (
     ExecutionResult,
     Experiment,
     ExperimentEvaluation,
+    ExperimentProposal,
     Hypothesis,
     HypothesisRecord,
 )
 from .evidence_evaluator import EvidenceEvaluator
-from .hypothesis_manager import HypothesisManager
-from .ledger import ExperimentLedger
+from .hypothesis_manager import HypothesisManager, UnknownHypothesisError
+from .ledger import ExperimentLedger, UnknownExperimentError
 
 __all__ = [
     "Hypothesis",
     "HypothesisRecord",
     "Experiment",
+    "ExperimentProposal",
     "ExperimentEvaluation",
     "ExecutionAction",
     "ExecutionResult",
     "HypothesisManager",
+    "UnknownHypothesisError",
     "ExperimentLedger",
+    "UnknownExperimentError",
     "EvidenceEvaluator",
 ]

@@ -178,12 +178,13 @@ class EvidenceEvaluator:
         if not observed_corpus.strip():
             return False
 
-        # Check if action is read_file or analysis_tool
+        # Strictly read_file only: generic analysis_tool absence is NEVER definitive absence
         actions = exp.actions_to_run
-        is_inspection = any(a.kind in ["read_file", "analysis_tool"] for a in actions)
-        has_marker_intent = any(kw in exp.intent.lower() for kw in ["marker", "contains", "check whether", "determine"])
+        is_read_file = any(a.kind == "read_file" for a in actions)
+        if not is_read_file:
+            return False
 
-        if is_inspection and exp.expected_evidence and (has_marker_intent or len(actions) == 1):
+        if exp.expected_evidence:
             return True
 
         return False

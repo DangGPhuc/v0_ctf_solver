@@ -111,7 +111,10 @@ class ExecutionRunner:
         Runs the full execution plan using the provided single_action_executor callable.
         """
         iteration = challenge_context.get("iteration", 1)
-        experiment_id = f"EXP-{iteration:03d}"
+        experiment_id = (
+            challenge_context.get("experiment_id")
+            or f"EXP-{iteration:03d}"
+        )
 
         actions_to_run = cls.resolve_actions_to_run(
             guidance=guidance,

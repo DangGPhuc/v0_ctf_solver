@@ -12,6 +12,11 @@ from ..models import (
 )
 
 
+class UnknownExperimentError(KeyError):
+    """Raised when an operation references an experiment not registered in the canonical ledger."""
+    pass
+
+
 class ExperimentLedger:
     """
     Canonical challenge-local experiment history writer and reader.
@@ -19,6 +24,7 @@ class ExperimentLedger:
 
     Invariants:
       - Canonical writer: All experiment outcomes and attempts are recorded here.
+      - System-owned IDs: Ledger generates and controls sequential stable IDs (EXP-001, EXP-002).
       - Resilient: Malformed lines never crash the reader.
       - Challenge-local: Strictly confined to challenge runtime directory.
       - No credentials/secrets persisted.
@@ -51,8 +57,12 @@ class ExperimentLedger:
         contradicting_evidence: Optional[List[str]] = None,
         experiment_id: Optional[str] = None,
     ) -> Experiment:
-        """Creates and appends a new pending experiment."""
-        exp_id = experiment_id or self.next_experiment_id()
+        """
+        Creates and appends a new pending experiment.
+        The System (not the Advisor) owns canonical experiment IDs.
+        """
+        # System authority: always assign the canonical sequential ID
+        exp_id = self.next_experiment_id()
         exp = Experiment(
             experiment_id=exp_id,
             hypothesis_id=hypothesis_id,
@@ -122,14 +132,12 @@ class ExperimentLedger:
         Appends the completed record to the canonical ledger.
         """
         existing = self.get(experiment_id)
-        if existing:
-            exp = existing.model_copy()
-        else:
-            exp = Experiment(
-                experiment_id=experiment_id,
-                hypothesis_id="H1",
-                intent="Execute solver action",
+        if not existing:
+            raise UnknownExperimentError(
+                f"Experiment '{experiment_id}' does not exist in canonical ledger. "
+                "Refusing to synthesize default hypothesis."
             )
+        exp = existing.model_copy()
 
         exp.outcome = evaluation.outcome
         exp.reason = evaluation.reason

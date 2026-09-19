@@ -140,6 +140,13 @@ class Experiment(BaseModel):
             return [self.action]
         return []
 
+class ExperimentProposal(BaseModel):
+    hypothesis_id: str
+    intent: str
+    execution_plan: List[ExecutionAction] = Field(default_factory=list)
+    expected_evidence: List[str] = Field(default_factory=list)
+    contradicting_evidence: List[str] = Field(default_factory=list)
+
 class Action(BaseModel):
     type: str = "command"
     command_or_task: str
@@ -148,6 +155,7 @@ class Action(BaseModel):
 class AdvisorGuidance(BaseModel):
     assessment: str = ""
     hypotheses: List[Hypothesis] = Field(default_factory=list)
+    experiment: Optional[ExperimentProposal] = None
     experiments: List[Experiment] = Field(default_factory=list)
     execution_plan: List[ExecutionAction] = Field(default_factory=list)
     next_actions: List[Action] = Field(default_factory=list)

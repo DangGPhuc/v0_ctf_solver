@@ -5,6 +5,11 @@ from typing import Any, Dict, List, Optional
 from ..models import ExperimentEvaluation, Hypothesis, HypothesisRecord
 
 
+class UnknownHypothesisError(KeyError):
+    """Raised when an operation targets an unregistered hypothesis."""
+    pass
+
+
 class HypothesisManager:
     """
     Manages the solver's explicit hypothesis reasoning state and lifecycle.
@@ -109,9 +114,9 @@ class HypothesisManager:
         """
         target = self._hypotheses.get(hypothesis_id)
         if not target:
-            # Auto-create if not previously registered
-            target = Hypothesis(id=hypothesis_id, statement=f"Hypothesis {hypothesis_id}", status="active")
-            self._hypotheses[hypothesis_id] = target
+            raise UnknownHypothesisError(
+                f"Hypothesis '{hypothesis_id}' is not registered. Refusing to apply evaluation."
+            )
 
         target.attempts += 1
 
@@ -142,14 +147,15 @@ class HypothesisManager:
         if not active:
             return True
 
-        # If active hypothesis has reached terminal state, pivot is required
-        if active.status in ["confirmed", "rejected"]:
+        # If active hypothesis has been rejected, pivot is required
+        if active.status == "rejected":
             return True
 
         # If consecutive failures exceed the budget, pivot is required
         if active.failure_count >= self.max_consecutive_failures:
             return True
 
+        # Confirmed hypothesis does NOT force a pivot (subsequent experiments can build on it)
         return False
 
     def to_dict(self) -> Dict[str, Any]:
