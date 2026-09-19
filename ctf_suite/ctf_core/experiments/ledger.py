@@ -72,6 +72,7 @@ class ExperimentLedger:
         expected_evidence: Optional[List[str]] = None,
         contradicting_evidence: Optional[List[str]] = None,
         experiment_id: Optional[str] = None,
+        context_fingerprint: Optional[str] = None,
     ) -> Experiment:
         """
         Creates and appends a new pending experiment atomically under lock.
@@ -86,6 +87,7 @@ class ExperimentLedger:
                 execution_plan=actions or [],
                 expected_evidence=expected_evidence or [],
                 contradicting_evidence=contradicting_evidence or [],
+                context_fingerprint=context_fingerprint,
                 outcome="pending",
                 created_at=datetime.now().isoformat(),
             )
@@ -203,6 +205,7 @@ class ExperimentLedger:
             "reason": exp.reason,
             "diff": "",
             "evidence": "; ".join(exp.actual_evidence),
+            "context_fingerprint": exp.context_fingerprint,
         }
 
     def _deserialize_entry(self, raw: Dict[str, Any]) -> Optional[Experiment]:
@@ -263,6 +266,7 @@ class ExperimentLedger:
             expected_evidence=expected_list,
             contradicting_evidence=contradicting_list,
             actual_evidence=actual_list,
+            context_fingerprint=raw.get("context_fingerprint"),
             outcome=outcome,
             reason=str(raw.get("reason") or raw.get("observed") or ""),
             created_at=str(raw.get("timestamp") or datetime.now().isoformat()),

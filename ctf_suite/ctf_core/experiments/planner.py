@@ -1,12 +1,12 @@
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union
 from pydantic import BaseModel, Field
 
 from ..models import ExecutionAction, ExperimentCandidate
-from ..execution.policy import ALLOWED_ANALYSIS_TOOLS, SUPPORTED_ACTION_KINDS
+from ..execution.policy import ALLOWED_ANALYSIS_TOOLS, SUPPORTED_ACTION_KINDS, ExecutionCapabilities
 from .hypothesis_manager import HypothesisManager
 from .ledger import ExperimentLedger
 from .progress import SolverProgressTracker
-from .signatures import compute_experiment_signature
+from .signatures import compute_material_signature, compute_experiment_signature
 
 
 class CandidateEvaluation(BaseModel):
@@ -29,7 +29,7 @@ class ExperimentPlanner:
     """
     Deterministic, explainable experiment candidate planner and selector.
     Evaluates candidates proposed by Strategic Advisor against:
-      1. Executability & capability boundaries (ActionPolicy allowlist).
+      1. Executability & capability boundaries (ActionPolicy allowlist and ExecutionCapabilities).
       2. Target hypothesis status (active/proposed vs rejected).
       3. Retry suppression (avoids repeated identical failing experiments without state change).
       4. Expected evidence novelty (prefers unseen evidence targets).
@@ -39,7 +39,7 @@ class ExperimentPlanner:
 
     def __init__(
         self,
-        capabilities: Optional[Dict[str, Any]] = None,
+        capabilities: Optional[Union[ExecutionCapabilities, Dict[str, Any]]] = None,
         stagnation_threshold: int = 3,
     ):
         self.capabilities = capabilities or {}
@@ -51,13 +51,34 @@ class ExperimentPlanner:
         if not actions:
             return False, "Candidate execution_plan is empty."
 
+        caps = self.capabilities
+        if isinstance(caps, ExecutionCapabilities):
+            supported_kinds = set(caps.supported_action_kinds)
+            allowed_tools = set(caps.allowed_analysis_tools)
+            avail_tools = set(caps.available_analysis_tools) if caps.available_analysis_tools else None
+            sage_avail = caps.sage_available
+        elif isinstance(caps, dict):
+            supported_kinds = set(caps.get("supported_action_kinds", SUPPORTED_ACTION_KINDS))
+            allowed_tools = set(caps.get("allowed_analysis_tools", ALLOWED_ANALYSIS_TOOLS))
+            avail_tools = set(caps["available_analysis_tools"]) if "available_analysis_tools" in caps else None
+            sage_avail = caps.get("sage_available", True)
+        else:
+            supported_kinds = SUPPORTED_ACTION_KINDS
+            allowed_tools = ALLOWED_ANALYSIS_TOOLS
+            avail_tools = None
+            sage_avail = True
+
         for idx, act in enumerate(actions, start=1):
-            if act.kind not in SUPPORTED_ACTION_KINDS:
+            if act.kind not in supported_kinds:
                 return False, f"Action {idx} has unsupported kind '{act.kind}'."
+            if act.kind == "run_sage_file" and not sage_avail:
+                return False, f"Action {idx} requires SageMath but sage is unavailable."
             if act.kind == "analysis_tool":
                 tool_name = act.tool or (act.argv[0] if act.argv else None)
-                if not tool_name or tool_name not in ALLOWED_ANALYSIS_TOOLS:
+                if not tool_name or tool_name not in allowed_tools:
                     return False, f"Action {idx} references disallowed analysis tool '{tool_name}'."
+                if avail_tools is not None and tool_name not in avail_tools:
+                    return False, f"Action {idx} references analysis tool '{tool_name}' which is not installed/available."
         return True, None
 
     def select_candidate(
@@ -66,6 +87,7 @@ class ExperimentPlanner:
         hypothesis_manager: HypothesisManager,
         ledger: ExperimentLedger,
         progress_tracker: SolverProgressTracker,
+        context_fingerprint: Optional[str] = None,
     ) -> SelectionResult:
         """
         Deterministically evaluates all candidates and selects the single most promising one.
@@ -81,7 +103,7 @@ class ExperimentPlanner:
         recent_ledger_experiments = ledger.list_all()
 
         for cand in candidates:
-            sig = compute_experiment_signature(cand)
+            sig = compute_material_signature(cand)
             details: Dict[str, Any] = {"signature": sig}
 
             # 1. Executability check
@@ -119,25 +141,33 @@ class ExperimentPlanner:
                 ))
                 continue
 
-            # 3. Retry suppression check
+            # 3. Retry suppression check with context fingerprint
             prior_runs = [
                 e for e in recent_ledger_experiments
-                if compute_experiment_signature(e) == sig
+                if compute_material_signature(e) == sig
             ]
             suppressed = False
             suppress_reason = ""
             if prior_runs:
                 last_run = prior_runs[-1]
-                if last_run.outcome == "rejected":
-                    suppressed = True
-                    suppress_reason = "retry_suppressed: Identical experiment was previously REJECTED."
-                elif last_run.outcome == "inconclusive":
-                    # If inconclusive, check if state has progressed since last run
-                    # If no new evidence was observed since that run, suppress retry
-                    if progress_tracker.progress.rounds_with_zero_new_evidence > 0:
+                # If context has changed since the prior run, experiment is eligible again
+                context_changed = False
+                if context_fingerprint is not None and getattr(last_run, "context_fingerprint", None) is not None:
+                    if context_fingerprint != last_run.context_fingerprint:
+                        context_changed = True
+
+                if not context_changed:
+                    if last_run.outcome == "rejected":
                         suppressed = True
-                        suppress_reason = "retry_suppressed: Identical experiment yielded INCONCLUSIVE with zero new evidence since."
-                # Note: If last_run.outcome == "failed" (transient error / timeout), retry is allowed.
+                        suppress_reason = "retry_suppressed: Identical experiment was previously REJECTED."
+                    elif last_run.outcome == "inconclusive":
+                        if (
+                            progress_tracker.progress.consecutive_no_progress_rounds > 0
+                            or progress_tracker.progress.rounds_with_zero_new_evidence > 0
+                        ):
+                            suppressed = True
+                            suppress_reason = "retry_suppressed: Identical experiment yielded INCONCLUSIVE with zero new evidence since."
+                # Note: If last_run.outcome == "failed" (transient error / timeout) or context_changed, retry is allowed.
 
             if suppressed:
                 progress_tracker.record_suppression()
@@ -151,8 +181,21 @@ class ExperimentPlanner:
                 continue
 
             # 4. Score calculation for ranking
-            # Dimension A: Hypothesis preference: active (3) > proposed (2) > confirmed (1)
-            hypo_score = 3 if hypo.status == "active" else (2 if hypo.status == "proposed" else 1)
+            # Dimension A: Hypothesis preference
+            # Active hypothesis retains priority (3) within failure budget even if status is inconclusive.
+            # Once failure budget is exhausted or active hypothesis is rejected, pivot is recommended and proposed alternatives take priority.
+            is_active_within_budget = (
+                cand.hypothesis_id == hypothesis_manager._active_id
+                and not hypothesis_manager.recommend_pivot()
+            )
+            if hypo.status == "active" or is_active_within_budget:
+                hypo_score = 3
+            elif hypo.status == "proposed":
+                hypo_score = 2
+            elif hypo.status == "confirmed":
+                hypo_score = 1
+            else:
+                hypo_score = 0
 
             # Dimension B: Evidence novelty: how many expected evidence targets are currently unknown?
             novel_count = 0
@@ -180,6 +223,7 @@ class ExperimentPlanner:
                 priority_score=score_tuple,
                 details=details,
             ))
+
 
         eligible = [e for e in evaluations if e.is_eligible]
         stagnation = progress_tracker.is_stagnated(self.stagnation_threshold)

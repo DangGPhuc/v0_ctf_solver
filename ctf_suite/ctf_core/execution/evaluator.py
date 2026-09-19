@@ -26,10 +26,13 @@ class ExecutionResultEvaluator:
         error_message: Optional[str] = None,
         stdout_truncated: Optional[bool] = None,
         stderr_truncated: Optional[bool] = None,
+        output_complete: Optional[bool] = None,
+        matched_evidence: Optional[List[str]] = None,
+        extra_flag_candidates: Optional[List[str]] = None,
     ) -> ExecutionResult:
         combined_out = (stdout or "") + "\n" + (stderr or "")
-        flag_candidates: List[str] = []
-        evidence_found: List[str] = []
+        flag_candidates: List[str] = list(extra_flag_candidates or [])
+        evidence_found: List[str] = list(matched_evidence or [])
 
         # 1. Flag Candidate extraction from stdout/stderr
         search_pattern = flag_format_regex.strip("^$")
@@ -55,18 +58,18 @@ class ExecutionResultEvaluator:
         # 2. Evidence extraction (inspect complete pre-truncation output)
         if guidance:
             for req_ev in guidance.requested_evidence:
-                if req_ev and req_ev.lower() in combined_out.lower():
+                if req_ev and req_ev.lower() in combined_out.lower() and req_ev not in evidence_found:
                     evidence_found.append(f"Matched requested evidence: '{req_ev}'")
 
             for act_def in getattr(guidance, "next_actions", []):
                 if getattr(act_def, "expected_evidence", None):
-                    if act_def.expected_evidence.lower() in combined_out.lower():
+                    if act_def.expected_evidence.lower() in combined_out.lower() and act_def.expected_evidence not in evidence_found:
                         evidence_found.append(f"Observed expected evidence: '{act_def.expected_evidence}'")
 
             exp_prop = getattr(guidance, "experiment", None)
             if exp_prop and getattr(exp_prop, "expected_evidence", None):
                 for exp_ev in exp_prop.expected_evidence:
-                    if exp_ev and exp_ev.lower() in combined_out.lower():
+                    if exp_ev and exp_ev.lower() in combined_out.lower() and exp_ev not in evidence_found:
                         evidence_found.append(f"Observed expected evidence: '{exp_ev}'")
 
         # 3. Status determination
@@ -88,7 +91,11 @@ class ExecutionResultEvaluator:
         MAX_TAIL = 1500
         is_stdout_truncated = bool(stdout_truncated) or (len(stdout or "") > MAX_TAIL)
         is_stderr_truncated = bool(stderr_truncated) or (len(stderr or "") > MAX_TAIL)
-        output_complete = not (is_stdout_truncated or is_stderr_truncated)
+
+        if output_complete is not None and not output_complete:
+            final_output_complete = False
+        else:
+            final_output_complete = not (is_stdout_truncated or is_stderr_truncated or timed_out)
 
         stdout_tail = stdout[-MAX_TAIL:] if stdout else ""
         stderr_tail = stderr[-MAX_TAIL:] if stderr else ""
@@ -119,5 +126,5 @@ class ExecutionResultEvaluator:
             stderr_tail=stderr_tail,
             stdout_truncated=is_stdout_truncated,
             stderr_truncated=is_stderr_truncated,
-            output_complete=output_complete,
+            output_complete=final_output_complete,
         )

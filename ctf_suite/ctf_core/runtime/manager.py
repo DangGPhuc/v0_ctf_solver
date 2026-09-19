@@ -220,9 +220,9 @@ class RuntimeManager:
             port = parts[1]
 
         # Sanitize metadata to prevent code injection into generated solver scripts
-        clean_comment_name = re.sub(r'[\r\n]+', ' ', str(challenge.name or "Unnamed"))
-        clean_comment_cat = re.sub(r'[\r\n]+', ' ', str(challenge.category or "misc"))
-        clean_comment_conn = re.sub(r'[\r\n]+', ' ', str(challenge.connection_info or "N/A"))
+        clean_comment_name = re.sub(r'[\r\n]+', ' ', str(challenge.name or "Unnamed")).replace("#", "_")
+        clean_comment_cat = re.sub(r'[\r\n]+', ' ', str(challenge.category or "misc")).replace("#", "_")
+        clean_comment_conn = re.sub(r'[\r\n]+', ' ', str(challenge.connection_info or "N/A")).replace("#", "_")
 
         safe_host_literal = json.dumps(host or "localhost")
         try:
@@ -231,7 +231,24 @@ class RuntimeManager:
             safe_port_literal = 1337
 
         safe_url_literal = json.dumps(conn if conn.startswith("http") else "")
-        safe_name_literal = json.dumps(str(challenge.name or "challenge"))
+
+        # Persist challenge_context.json in work/ directory as the authoritative structured metadata store
+        ctx_file = target.parent / "challenge_context.json"
+        try:
+            ctx_data = {
+                "challenge_id": str(challenge.id),
+                "name": challenge.name,
+                "category": challenge.category,
+                "points": challenge.points,
+                "description": challenge.description,
+                "connection_info": challenge.connection_info,
+                "host": host or "localhost",
+                "port": safe_port_literal,
+                "target_url": conn if conn.startswith("http") else "",
+            }
+            ctx_file.write_text(json.dumps(ctx_data, indent=2, ensure_ascii=False), encoding="utf-8")
+        except Exception:
+            pass
 
         if tpl_path.is_file():
             content = tpl_path.read_text(encoding="utf-8")
@@ -250,22 +267,26 @@ class RuntimeManager:
             target.write_text(content, encoding="utf-8")
             return
 
-        content = f"""#!/usr/bin/env python3
-# Solver for: {clean_comment_name} ({clean_comment_cat})
-# Connection: {clean_comment_conn}
-HOST = {safe_host_literal}
-PORT = {safe_port_literal}
-TARGET_URL = {safe_url_literal}
-
-import sys
-import os
-
-def solve():
-    print(f"[*] Running solver for {safe_name_literal}...")
-
-if __name__ == "__main__":
-    solve()
-"""
+        # Fallback solver template when no category-specific template exists
+        content = (
+            "#!/usr/bin/env python3\n"
+            f"# Solver for: {clean_comment_name} ({clean_comment_cat})\n"
+            f"# Connection: {clean_comment_conn}\n"
+            f"HOST = {safe_host_literal}\n"
+            f"PORT = {safe_port_literal}\n"
+            f"TARGET_URL = {safe_url_literal}\n\n"
+            "import json\n"
+            "import os\n"
+            "import sys\n"
+            "from pathlib import Path\n\n"
+            "_ctx_path = Path(__file__).parent / 'challenge_context.json'\n"
+            "_ctx = json.loads(_ctx_path.read_text(encoding='utf-8')) if _ctx_path.is_file() else {}\n\n"
+            "def solve():\n"
+            "    name = _ctx.get('name', 'challenge')\n"
+            "    print(f'[*] Running solver for {name}...')\n\n"
+            "if __name__ == '__main__':\n"
+            "    solve()\n"
+        )
         target.write_text(content, encoding="utf-8")
 
     def read_challenge_state(self, event_id: str, challenge_id: Any) -> Optional[Dict[str, Any]]:

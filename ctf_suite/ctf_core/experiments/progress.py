@@ -40,6 +40,9 @@ class SolverProgress(BaseModel):
     hypothesis_transitions: int = 0
     suppressed_experiments: int = 0
     rounds_with_zero_new_evidence: int = 0
+    consecutive_no_progress_rounds: int = 0
+    last_progress_experiment: int = 0
+    last_transition_experiment: int = 0
     pivot_count: int = 0
     known_evidence: List[str] = Field(default_factory=list)
     recent_signatures: List[str] = Field(default_factory=list)
@@ -98,8 +101,11 @@ class SolverProgressTracker:
         if new_items:
             self.progress.new_evidence_count += len(new_items)
             self.progress.rounds_with_zero_new_evidence = 0
+            self.progress.consecutive_no_progress_rounds = 0
+            self.progress.last_progress_experiment = self.progress.total_experiments
         else:
             self.progress.rounds_with_zero_new_evidence += 1
+            self.progress.consecutive_no_progress_rounds += 1
 
         self.save()
         return new_items
@@ -117,19 +123,24 @@ class SolverProgressTracker:
 
     def record_hypothesis_transition(self) -> None:
         self.progress.hypothesis_transitions += 1
+        self.progress.rounds_with_zero_new_evidence = 0
+        self.progress.consecutive_no_progress_rounds = 0
+        self.progress.last_transition_experiment = self.progress.total_experiments
         self.save()
 
     def record_pivot(self) -> None:
         self.progress.pivot_count += 1
         self.progress.rounds_with_zero_new_evidence = 0
+        self.progress.consecutive_no_progress_rounds = 0
         self.save()
 
     def is_stagnated(self, threshold: int = 3) -> bool:
         """
-        Scientific stagnation occurs when multiple consecutive completed experiments
+        Scientific stagnation occurs when consecutive completed experiments
         yield zero new evidence and no hypothesis transitions.
         """
         return (
-            self.progress.rounds_with_zero_new_evidence >= threshold
-            and self.progress.total_experiments >= threshold
+            self.progress.consecutive_no_progress_rounds >= threshold
+            or self.progress.rounds_with_zero_new_evidence >= threshold
         )
+

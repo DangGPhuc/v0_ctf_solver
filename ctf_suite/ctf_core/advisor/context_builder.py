@@ -12,6 +12,7 @@ from ..prompts import (
     PromptSpec,
     StateCapsule,
 )
+from ..execution.policy import ExecutionCapabilities
 
 console = Console()
 
@@ -142,6 +143,7 @@ class ContextBuilder:
                 f"**Đề bài**:\n{desc}\n\n"
                 f"**Gợi ý**:\n{hints_text}"
             ),
+            "execution_capabilities": ExecutionCapabilities.detect().describe_for_advisor(),
         }
         if solver_snippet:
             context_artifacts["solver_preview"] = f"```python\n{solver_snippet}\n```"

@@ -14,6 +14,7 @@ from ..runtime.manager import RuntimeManager, sanitize_path_component
 from ..platforms.registry import create_platform, detect_platform_type
 from ..execution.adapter import ExecutorAdapter
 from ..execution import get_executor
+from ..experiments.ledger import ExperimentLedger
 from .submit_service import SubmitService
 from .advisor_service import AdvisorService
 
@@ -266,7 +267,11 @@ class ChallengeOrchestrator:
                 console.print(f"[bold red]❌ Advisor status is READY but no canonical experiment ID was assigned. Halting execution.[/bold red]")
                 return False
 
-            # Build challenge context for executor
+            # Build challenge context for executor with canonical experiment authority
+            advisor_dir = cpath / ".advisor"
+            ledger = ExperimentLedger(advisor_dir)
+            canonical_exp = ledger.get(active_exp_id) if active_exp_id else None
+
             challenge_context = {
                 "challenge_id": cid,
                 "name": cname,
@@ -276,6 +281,8 @@ class ChallengeOrchestrator:
                 "iteration": iteration,
                 "experiment_id": active_exp_id,
                 "connection_info": chall_obj.connection_info,
+                "canonical_experiment": canonical_exp,
+                "actions": list(canonical_exp.actions_to_run) if canonical_exp else [],
             }
 
             # Execute actions via ExecutorAdapter

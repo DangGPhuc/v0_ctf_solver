@@ -121,6 +121,7 @@ class Experiment(BaseModel):
     expected_evidence: List[str] = Field(default_factory=list)
     contradicting_evidence: List[str] = Field(default_factory=list)
     actual_evidence: List[str] = Field(default_factory=list)
+    context_fingerprint: Optional[str] = None
     outcome: Literal[
         "pending",
         "confirmed",

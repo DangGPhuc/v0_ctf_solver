@@ -53,6 +53,7 @@ from ..experiments import (
     UnknownExperimentError,
     UnknownHypothesisError,
 )
+from ..execution.policy import ExecutionCapabilities
 
 console = Console()
 
@@ -342,7 +343,7 @@ class AdvisorService:
             )]
 
         if candidates:
-            planner = ExperimentPlanner()
+            planner = ExperimentPlanner(capabilities=ExecutionCapabilities.detect())
             sel_res = planner.select_candidate(
                 candidates=candidates,
                 hypothesis_manager=hypo_mgr,
@@ -365,8 +366,21 @@ class AdvisorService:
                 )
                 state["active_experiment_id"] = canonical_exp.experiment_id
                 progress_tracker.record_experiment_attempt(compute_experiment_signature(canonical_exp))
+                # CRITICAL CAUSAL INVARIANT: Synchronize guidance to canonical experiment's actions
+                guidance.execution_plan = list(canonical_exp.actions_to_run)
+                guidance.experiment = ExperimentProposal(
+                    hypothesis_id=canonical_exp.hypothesis_id,
+                    intent=canonical_exp.intent,
+                    execution_plan=canonical_exp.actions_to_run,
+                    expected_evidence=canonical_exp.expected_evidence,
+                    contradicting_evidence=canonical_exp.contradicting_evidence,
+                )
+                guidance.experiments = [canonical_exp]
             else:
                 state["active_experiment_id"] = None
+                guidance.execution_plan = []
+                guidance.experiment = None
+                guidance.experiments = []
         elif guidance.execution_plan:
             hypo_id = guidance.hypotheses[0].id if guidance.hypotheses else (state.get("active_hypothesis_id") or "H1")
             canonical_exp = ledger.create(
