@@ -1,13 +1,111 @@
 import os
-import shutil
-import subprocess
+import re
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
+
 
 class StaticTriage:
-    @staticmethod
-    def analyze_file(fpath: Path) -> str:
-        """Run static triage on a file using file, checksec, strings, and size checks."""
+    """
+    Controlled static triage engine for challenge files.
+    Security guarantee:
+      - Uses safe pure-Python inspection by default.
+      - NEVER executes uncontrolled host subprocesses (such as host 'file', 'checksec', 'strings')
+        directly on untrusted challenge artifacts.
+    """
+
+    @classmethod
+    def detect_file_type_pure_python(cls, fpath: Path, header: bytes) -> str:
+        """Determines file type using binary magic signatures and lightweight inspection."""
+        if header.startswith(b"\x7fELF"):
+            is_64 = header[4] == 2 if len(header) > 4 else True
+            is_le = header[5] == 1 if len(header) > 5 else True
+            bits = "64-bit" if is_64 else "32-bit"
+            endian = "LSB" if is_le else "MSB"
+            byteorder = "little" if is_le else "big"
+            machine = int.from_bytes(header[18:20], byteorder=byteorder) if len(header) >= 20 else 0
+            arch_map = {
+                0x03: "Intel 80386",
+                0x3E: "x86-64",
+                0x28: "ARM",
+                0xB7: "ARM aarch64",
+                0x08: "MIPS",
+                0x0A: "MIPS",
+                0xF3: "RISC-V",
+            }
+            arch = arch_map.get(machine, f"machine 0x{machine:x}")
+            e_type = int.from_bytes(header[16:18], byteorder=byteorder) if len(header) >= 18 else 0
+            obj_type = "executable" if e_type == 2 else ("shared object" if e_type == 3 else "relocatable")
+            return f"ELF {bits} {endian} {obj_type}, {arch}"
+
+        if header.startswith(b"MZ"):
+            return "PE32/PE64 executable (Windows)"
+
+        if header.startswith(b"\x00asm"):
+            return "WebAssembly (WASM) binary module"
+
+        if header.startswith(b"\xd4\xc3\xb2\xa1") or header.startswith(b"\n\r\r\n"):
+            return "pcap capture file"
+
+        if header.startswith(b"PK\x03\x04"):
+            return "Zip archive data"
+
+        if header.startswith(b"\x1f\x8b"):
+            return "gzip compressed data"
+
+        if header.startswith(b"7z\xbc\xaf\x27\x1c"):
+            return "7-zip archive data"
+
+        if header.startswith(b"BZh"):
+            return "bzip2 compressed data"
+
+        if header.startswith(b"\x89PNG\r\n\x1a\n"):
+            return "PNG image data"
+
+        if header.startswith(b"\xff\xd8\xff"):
+            return "JPEG image data"
+
+        # Check if text
+        try:
+            sample_text = header.decode("utf-8")
+            if sample_text.startswith("#!"):
+                first_line = sample_text.splitlines()[0]
+                return f"Script text executable, {first_line}"
+            if "def " in sample_text or "import " in sample_text:
+                return "Python script text"
+            if "{" in sample_text and "}" in sample_text:
+                return "JSON or C-like source text"
+            return "ASCII text"
+        except UnicodeDecodeError:
+            return "data"
+
+    @classmethod
+    def extract_interesting_strings(cls, fpath: Path, max_bytes: int = 5 * 1024 * 1024) -> List[str]:
+        """Extracts printable ASCII strings containing CTF-relevant keywords without spawning host 'strings'."""
+        try:
+            with open(fpath, "rb") as f:
+                content = f.read(max_bytes)
+            # Find printable ASCII sequences >= 6 chars
+            raw_matches = re.findall(rb"[\x20-\x7e]{6,}", content)
+            interesting = []
+            keywords = ["flag", "ctf", "admin", "pass", "key", "/bin/sh", "system", "secret"]
+            for b in raw_matches:
+                try:
+                    s = b.decode("ascii")
+                    s_lower = s.lower()
+                    if any(k in s_lower for k in keywords):
+                        if s not in interesting:
+                            interesting.append(s)
+                    if len(interesting) >= 15:
+                        break
+                except Exception:
+                    continue
+            return interesting
+        except Exception:
+            return []
+
+    @classmethod
+    def analyze_file(cls, fpath: Path) -> str:
+        """Run safe static triage on a file using pure Python."""
         fpath = Path(fpath)
         if not fpath.is_file():
             return f"**File**: `{fpath.name}` (Không tồn tại)"
@@ -15,37 +113,32 @@ class StaticTriage:
         size = fpath.stat().st_size
         lines = [f"#### 📄 Tệp: `{fpath.name}` ({size:,} bytes)"]
 
-        # 1. file command
-        if shutil.which("file"):
-            try:
-                res = subprocess.run(["file", "-b", str(fpath)], capture_output=True, text=True, timeout=5)
-                file_type = res.stdout.strip()
-                lines.append(f"- **Định dạng (File Type)**: `{file_type}`")
-            except Exception:
-                pass
+        try:
+            with open(fpath, "rb") as f:
+                header = f.read(64)
+        except Exception as e:
+            lines.append(f"- **Lỗi đọc file**: `{e}`")
+            return "\n".join(lines)
 
-        # 2. checksec (for ELF)
-        if shutil.which("checksec"):
-            try:
-                res = subprocess.run(["checksec", "--file=" + str(fpath)], capture_output=True, text=True, timeout=5)
-                checksec_out = res.stdout.strip()
-                if checksec_out:
-                    clean_checksec = "\n".join([f"    {l.strip()}" for l in checksec_out.splitlines() if l.strip()])
-                    lines.append(f"- **Mitigations (Checksec)**:\n```text\n{clean_checksec}\n```")
-            except Exception:
-                pass
+        # 1. Pure-Python file type signature
+        file_type = cls.detect_file_type_pure_python(fpath, header)
+        lines.append(f"- **Định dạng (File Type)**: `{file_type}`")
 
-        # 3. strings
-        if shutil.which("strings") and size < 20 * 1024 * 1024:
-            try:
-                res = subprocess.run(["strings", "-a", "-n", "6", str(fpath)], capture_output=True, text=True, timeout=5)
-                str_lines = res.stdout.splitlines()
-                flag_hints = [s for s in str_lines if any(k in s.lower() for k in ["flag", "ctf", "admin", "pass", "key", "/bin/sh", "system"])]
-                if flag_hints:
-                    interesting = flag_hints[:10]
-                    lines.append(f"- **Chuỗi đáng chú ý (Interesting Strings)**:\n```text\n" + "\n".join(interesting) + "\n```")
-            except Exception:
-                pass
+        # 2. Pure-Python mitigations for ELF
+        if header.startswith(b"\x7fELF"):
+            from .fingerprint import FingerprintEngine
+            is_64 = header[4] == 2 if len(header) > 4 else True
+            byteorder = "little" if (len(header) > 5 and header[5] == 1) else "big"
+            protections: List[str] = []
+            FingerprintEngine._inspect_elf_protections_pure_python(fpath, header, is_64, byteorder, protections)
+            if protections:
+                lines.append(f"- **Mitigations**: `{', '.join(protections)}`")
+
+        # 3. Pure-Python interesting strings (no host 'strings' subprocess)
+        if size < 20 * 1024 * 1024:
+            interesting = cls.extract_interesting_strings(fpath)
+            if interesting:
+                lines.append(f"- **Chuỗi đáng chú ý (Interesting Strings)**:\n```text\n" + "\n".join(interesting[:10]) + "\n```")
 
         return "\n".join(lines)
 

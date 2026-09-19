@@ -175,15 +175,21 @@ class FingerprintEngine:
         # Binary header inspection
         try:
             with open(fpath, "rb") as f:
-                header = f.read(32)
+                header = f.read(64)
 
             if header.startswith(b"\x7fELF"):
                 file_types.append("elf")
                 # 32 or 64-bit
                 is_64 = header[4] == 2
                 is_le = header[5] == 1
-                runtime_signals["endianness"] = "little" if is_le else "big"
-                machine = header[18] if len(header) > 18 else 0
+                byteorder = "little" if is_le else "big"
+                runtime_signals["endianness"] = byteorder
+
+                # Correct 2-byte e_machine parsing with file endianness
+                if len(header) >= 20:
+                    machine = int.from_bytes(header[18:20], byteorder=byteorder)
+                else:
+                    machine = 0
 
                 if machine == 0x3E:  # EM_X86_64
                     architectures.append("x86-64")
@@ -193,33 +199,13 @@ class FingerprintEngine:
                     architectures.append("arm")
                 elif machine == 0xB7:  # EM_AARCH64
                     architectures.append("aarch64")
-                elif machine in [0x08, 0x0A]:  # EM_MIPS
+                elif machine in [0x08, 0x0A]:  # EM_MIPS / EM_MIPS_RS3_LE
                     architectures.append("mips")
                 elif machine == 0xF3:  # EM_RISCV
                     architectures.append("riscv")
 
-                # Run checksec if available
-                if shutil.which("checksec"):
-                    res = subprocess.run(["checksec", f"--file={fpath}"], capture_output=True, text=True, timeout=3)
-                    cout = (res.stdout + res.stderr).lower()
-                    if "no canary" in cout:
-                        protections.append("no-canary")
-                    elif "canary found" in cout:
-                        protections.append("canary")
-                    if "no pie" in cout:
-                        protections.append("no-pie")
-                    elif "pie enabled" in cout:
-                        protections.append("pie")
-                    if "nx disabled" in cout:
-                        protections.append("no-nx")
-                    elif "nx enabled" in cout:
-                        protections.append("nx")
-                    if "partial relro" in cout:
-                        protections.append("partial-relro")
-                    elif "full relro" in cout:
-                        protections.append("full-relro")
-                    elif "no relro" in cout:
-                        protections.append("no-relro")
+                # Safe pure-Python ELF mitigation inspection (NO uncontrolled host subprocess execution)
+                cls._inspect_elf_protections_pure_python(fpath, header, is_64, byteorder, protections)
 
             elif header.startswith(b"MZ"):
                 file_types.append("pe")
@@ -241,5 +227,90 @@ class FingerprintEngine:
                     architectures.append("arm-cortex-m")
                 if b"FreeRTOS" in content_bytes:
                     frameworks.append("freertos")
+        except Exception:
+            pass
+
+    @classmethod
+    def _inspect_elf_protections_pure_python(
+        cls,
+        fpath: Path,
+        header: bytes,
+        is_64: bool,
+        byteorder: str,
+        protections: List[str],
+    ):
+        """
+        Extracts binary mitigations (NX, PIE, RELRO, Canary) safely via pure Python.
+        Never executes untrusted binaries or host subprocesses.
+        """
+        try:
+            # 1. PIE check via e_type (offset 16-18)
+            if len(header) >= 18:
+                e_type = int.from_bytes(header[16:18], byteorder=byteorder)
+                if e_type == 3:  # ET_DYN
+                    protections.append("pie")
+                elif e_type == 2:  # ET_EXEC
+                    protections.append("no-pie")
+
+            # 2. Inspect file bytes for Canary and Program Headers
+            with open(fpath, "rb") as f:
+                content = f.read(2 * 1024 * 1024)
+
+            # Check Canary via __stack_chk_fail
+            if b"__stack_chk_fail" in content:
+                protections.append("canary")
+            else:
+                protections.append("no-canary")
+
+            # Program headers offset
+            if is_64 and len(header) >= 58:
+                phoff = int.from_bytes(header[32:40], byteorder=byteorder)
+                phentsize = int.from_bytes(header[54:56], byteorder=byteorder)
+                phnum = int.from_bytes(header[56:58], byteorder=byteorder)
+            elif not is_64 and len(header) >= 46:
+                phoff = int.from_bytes(header[28:32], byteorder=byteorder)
+                phentsize = int.from_bytes(header[42:44], byteorder=byteorder)
+                phnum = int.from_bytes(header[44:46], byteorder=byteorder)
+            else:
+                phoff, phentsize, phnum = 0, 0, 0
+
+            has_nx = False
+            has_no_nx = False
+            has_relro = False
+
+            if phoff > 0 and phentsize >= 32 and phnum > 0 and len(content) > phoff:
+                for i in range(min(phnum, 64)):
+                    entry_off = phoff + i * phentsize
+                    if entry_off + phentsize > len(content):
+                        break
+                    ph_data = content[entry_off : entry_off + phentsize]
+                    p_type = int.from_bytes(ph_data[0:4], byteorder=byteorder)
+
+                    # PT_GNU_STACK = 0x6474E551
+                    if p_type == 0x6474E551:
+                        # flags: offset 4 (4 bytes) on 64-bit, offset 24 (4 bytes) on 32-bit
+                        p_flags = int.from_bytes(ph_data[4:8] if is_64 else ph_data[24:28], byteorder=byteorder)
+                        if p_flags & 1:  # PF_X
+                            has_no_nx = True
+                        else:
+                            has_nx = True
+
+                    # PT_GNU_RELRO = 0x6474E552
+                    elif p_type == 0x6474E552:
+                        has_relro = True
+
+            if has_no_nx:
+                protections.append("no-nx")
+            elif has_nx:
+                protections.append("nx")
+
+            if has_relro:
+                if b"BIND_NOW" in content:
+                    protections.append("full-relro")
+                else:
+                    protections.append("partial-relro")
+            elif phoff > 0:
+                protections.append("no-relro")
+
         except Exception:
             pass
