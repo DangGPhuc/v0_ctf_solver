@@ -149,7 +149,9 @@ class StaticTriage:
         if not dir_path.is_dir():
             return results
 
+        ignored_names = {"README.md", "metadata.json", "flag.txt"}
+        ignored_suffixes = {".id0", ".id1", ".id2", ".nam", ".til", ".i64", ".idb"}
         for p in sorted(dir_path.iterdir()):
-            if p.is_file() and not p.name.startswith("."):
+            if p.is_file() and not p.name.startswith(".") and p.name not in ignored_names and p.suffix not in ignored_suffixes:
                 results.append(StaticTriage.analyze_file(p))
         return results

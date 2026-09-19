@@ -66,7 +66,12 @@ class RestrictedLocalExecutor:
 
         return resolved
 
-    def execute(self, challenge_context: Dict[str, Any], guidance: AdvisorGuidance) -> ExecutionResult:
+    def execute(
+        self,
+        challenge_context: Dict[str, Any],
+        guidance: Optional[AdvisorGuidance] = None,
+        allow_trusted_fallback: bool = False,
+    ) -> ExecutionResult:
         if "work_dir" in challenge_context:
             work_dir = Path(challenge_context["work_dir"]).resolve()
         elif "challenge_dir" in challenge_context:
@@ -177,4 +182,5 @@ class RestrictedLocalExecutor:
             single_action_executor=run_single_action,
             flag_format_regex=self.flag_format_regex,
             default_timeout=self.timeout,
+            allow_trusted_fallback=allow_trusted_fallback,
         )

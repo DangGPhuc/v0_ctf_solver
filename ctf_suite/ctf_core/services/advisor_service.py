@@ -49,7 +49,7 @@ class AdvisorService:
     - Executor (Anti-IDE / OpenCode): Thực thi lệnh, chạy debugger, compile evidence
     - Strategic Advisor (ChatGPT Web qua Oracle): Tư duy phân tích, lập giả thuyết, định hướng
     - Actuator (BrowserSkill): Thao tác website/portal
-    - Escalation (PAL MCP): Hội chẩn đa mô hình khi hết Hypothesis Budget
+    - Strategic Escalation: Phá vỡ bế tắc giả định (Strategic Assumption Challenge & Reframe) khi hết Hypothesis Budget
     - Meta-Layer (Dream-RSI): Ghi nhận DiscoveryTree (DAG), ExplorationPolicy, Offline Replay Simulator,
       và Declarative Technique Cards.
     """
@@ -207,7 +207,7 @@ class AdvisorService:
         }
 
     def _generate_initial_findings(self, chall_dir: Path, meta: Dict[str, Any]) -> str:
-        """Thực hiện trích xuất tĩnh cơ bản để xây dựng L1 Context."""
+        """Thực hiện trích xuất tĩnh an toàn thuần Python để xây dựng L1 Context."""
         name = meta.get("name", "Chall")
         category = meta.get("category", "Misc")
         attachments_dir = (chall_dir / "input") if (chall_dir / "input").is_dir() else (chall_dir / "challenge")
@@ -217,60 +217,12 @@ class AdvisorService:
             "## 1. Protections & Binary Metadata (Checksec / File)",
         ]
 
-        triage_lines = []
+        triage_reports: List[str] = []
         if attachments_dir.is_dir():
-            for fpath in attachments_dir.iterdir():
-                if fpath.name in ["README.md", "metadata.json", "flag.txt"] or fpath.is_dir() or fpath.name.startswith("."):
-                    continue
-                if fpath.suffix in [".id0", ".id1", ".id2", ".nam", ".til", ".i64", ".idb"]:
-                    continue
+            triage_reports = StaticTriage.triage_directory(attachments_dir)
 
-                # File command
-                file_type = ""
-                try:
-                    res_file = subprocess.run(
-                        ["file", "-b", str(fpath)], capture_output=True, text=True, timeout=5
-                    )
-                    file_type = res_file.stdout.strip()
-                    triage_lines.append(f"- **{fpath.name}**: `{file_type}`")
-                except Exception:
-                    pass
-
-                # Checksec nếu là ELF
-                if "ELF" in file_type:
-                    try:
-                        res_cs = subprocess.run(
-                            ["checksec", f"--file={fpath}"], capture_output=True, text=True, timeout=5
-                        )
-                        if res_cs.returncode == 0:
-                            triage_lines.append(f"  ```text\n  {res_cs.stdout.strip()}\n  ```")
-                    except Exception:
-                        pass
-
-                # Strings chắt lọc
-                try:
-                    res_str = subprocess.run(
-                        ["strings", "-n", "7", str(fpath)], capture_output=True, text=True, timeout=5
-                    )
-                    lines = res_str.stdout.splitlines()
-                    interesting = [
-                        line
-                        for line in lines
-                        if re.search(
-                            r"(flag|ctf|key|pass|admin|secret|system|bin/sh|eval|SELECT|INSERT|POST|GET)",
-                            line,
-                            re.IGNORECASE,
-                        )
-                    ][:15]
-                    if interesting:
-                        triage_lines.append("  - Interesting strings:")
-                        for s in interesting:
-                            triage_lines.append(f"    - `{s}`")
-                except Exception:
-                    pass
-
-        if triage_lines:
-            findings.extend(triage_lines)
+        if triage_reports:
+            findings.extend(triage_reports)
         else:
             findings.append("- *Không tìm thấy tệp nhị phân hoặc thông tin tĩnh bổ sung.*")
 
@@ -369,28 +321,19 @@ class AdvisorService:
         prompt_file = advisor_dir / "latest_prompt.md"
         prompt_file.write_text(prompt, encoding="utf-8")
 
-        oracle_cmd = self._build_oracle_command(prompt, oracle_session)
-        advisor_response = None
-        new_session = oracle_session
-        provider = "chatgpt-web"
+        # Delegate consultation to advisor provider
+        adv_res = self.advisor_provider.consult(
+            prompt=prompt,
+            oracle_session=oracle_session,
+            challenge_id=str(challenge_id),
+        )
 
-        if oracle_cmd:
-            console.print("[cyan]🤖 Đang kết nối ChatGPT Web qua Oracle Browser Bridge...[/cyan]")
-            try:
-                res = subprocess.run(oracle_cmd, capture_output=True, text=True, timeout=120)
-                if res.returncode == 0 and res.stdout.strip():
-                    advisor_response = res.stdout.strip()
-                    m = re.search(r"session[:\s]+([a-zA-Z0-9_\-]+)", advisor_response, re.IGNORECASE)
-                    if m:
-                        new_session = m.group(1)
-                    console.print("[bold green]✔ Đã nhận phản hồi chiến lược từ ChatGPT Web qua Oracle![/bold green]")
-                else:
-                    console.print(f"[yellow]⚠️ Oracle trả về lỗi hoặc không có phản hồi: {res.stderr[:200]}[/yellow]")
-            except Exception as e:
-                console.print(f"[yellow]⚠️ Lỗi khi thực thi Oracle CLI: {e}[/yellow]")
+        advisor_response = adv_res.raw_response
+        new_session = adv_res.session_id or oracle_session
+        provider = adv_res.provider
 
         # Fallback Mechanism
-        if not advisor_response:
+        if adv_res.status == "PROVIDER_UNAVAILABLE" or not advisor_response:
             console.print("[yellow]🔄 Chuyển sang chế độ Fallback: Copy Prompt vào Clipboard & Mở Firefox...[/yellow]")
             self.browser_bridge.copy_to_clipboard(prompt)
             self.browser_bridge.open_firefox("https://chatgpt.com/")
@@ -524,26 +467,6 @@ class AdvisorService:
         """Parse advisor markdown/text output into structured AdvisorGuidance."""
         return GuidanceParser.parse(text)
 
-
-    def _build_oracle_command(self, prompt: str, oracle_session: Optional[str] = None) -> Optional[List[str]]:
-        oracle_bin = shutil.which("oracle")
-        if oracle_bin:
-            cmd = [oracle_bin, "--engine", "browser", "--browser-attach-running"]
-            if oracle_session:
-                cmd.extend(["--followup", oracle_session])
-            cmd.extend(["-p", prompt])
-            return cmd
-
-        npx_bin = shutil.which("npx")
-        if npx_bin:
-            cmd = [npx_bin, "-y", "@steipete/oracle", "--engine", "browser", "--browser-attach-running"]
-            if oracle_session:
-                cmd.extend(["--followup", oracle_session])
-            cmd.extend(["-p", prompt])
-            return cmd
-
-        return None
-
     def _copy_to_clipboard(self, text: str) -> bool:
         try:
             p = subprocess.Popen(["xclip", "-selection", "clipboard"], stdin=subprocess.PIPE)
@@ -650,7 +573,7 @@ class AdvisorService:
                 state["status"] = "stalled"
                 console.print(
                     f"[bold red]🚨 HYPOTHESIS BUDGET EXCEEDED! Đã thất bại {budget['current_failures']} lần liên tiếp.[/bold red]\n"
-                    f"[yellow]Khuyến nghị: Chạy `./ctf advisor escalate {challenge_id}` để kích hoạt thẩm định chéo PAL MCP![/yellow]"
+                    f"[yellow]Khuyến nghị: Chạy `./ctf advisor escalate {challenge_id}` để kích hoạt Strategic Assumption Challenge & Reframe![/yellow]"
                 )
         elif status_clean == "CONFIRMED":
             budget["current_failures"] = 0
@@ -913,7 +836,7 @@ class AdvisorService:
         table.add_row("DAG Tree Nodes", f"{tree_nodes_count} nút")
         table.add_row("Oracle Session", state.get("oracle_session") or "[dim]None[/dim]")
         table.add_row("Advisor Provider", state.get("advisor_provider", "unknown"))
-        table.add_row("Escalated via PAL", "✔ Có" if state.get("escalated") else "✖ Chưa")
+        table.add_row("Strategic Escalation", "✔ Có" if state.get("escalated") else "✖ Chưa")
 
         console.print(table)
         return {"exists": True, "state": state, "total_experiments": exps_count, "tree_nodes": tree_nodes_count}

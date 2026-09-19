@@ -1,7 +1,7 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "CTFAdvisorState",
-  "description": "Quản lý trạng thái trao đổi giữa Executor (Anti-IDE/OpenCode) và Strategic Advisor (ChatGPT Web qua Oracle/PAL)",
+  "description": "Quản lý trạng thái trao đổi giữa Executor (Anti-IDE/OpenCode) và Strategic Advisor (ChatGPT Web qua Oracle)",
   "type": "object",
   "required": ["challenge_id", "status", "phase", "iteration", "hypothesis_budget"],
   "properties": {

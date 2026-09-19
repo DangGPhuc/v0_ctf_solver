@@ -24,54 +24,88 @@ class ExecutionRunner:
     """
 
     @classmethod
-    def resolve_actions_to_run(
+    def _build_trusted_fallback_actions(
         cls,
-        guidance: AdvisorGuidance,
         work_dir: Path,
         default_timeout: int = 60,
     ) -> List[ExecutionAction]:
         """
-        Extracts execution plan from guidance or falls back to standard solver files.
-        Notice: guidance.next_actions is human-readable prose and is NEVER executed.
+        Builds default fallback actions (solve.sage, solve.py, or list_files)
+        ONLY for explicitly trusted internal workflows (e.g. manual CLI test runners).
         """
-        actions_to_run: List[ExecutionAction] = []
-        if getattr(guidance, "execution_plan", None):
-            actions_to_run.extend(guidance.execution_plan)
+        solve_sage = work_dir / "solve.sage"
+        solve_script = work_dir / "solve.py"
+        if solve_sage.is_file():
+            return [ExecutionAction(
+                kind="run_sage_file",
+                argv=["sage", "solve.sage"],
+                path="solve.sage",
+                timeout=default_timeout,
+            )]
+        elif solve_script.is_file():
+            return [ExecutionAction(
+                kind="run_solver",
+                argv=["python3", "solve.py"],
+                path="solve.py",
+                timeout=default_timeout,
+            )]
         else:
-            solve_sage = work_dir / "solve.sage"
-            solve_script = work_dir / "solve.py"
-            if solve_sage.is_file():
-                actions_to_run.append(ExecutionAction(
-                    kind="run_sage_file",
-                    argv=["sage", "solve.sage"],
-                    path="solve.sage",
-                    timeout=default_timeout,
-                ))
-            elif solve_script.is_file():
-                actions_to_run.append(ExecutionAction(
-                    kind="run_solver",
-                    argv=["python3", "solve.py"],
-                    path="solve.py",
-                    timeout=default_timeout,
-                ))
-            else:
-                actions_to_run.append(ExecutionAction(
-                    kind="list_files",
-                    argv=["ls", "-la"],
-                    timeout=10,
-                ))
-        return actions_to_run
+            return [ExecutionAction(
+                kind="list_files",
+                argv=["ls", "-la"],
+                timeout=10,
+            )]
+
+    @classmethod
+    def resolve_actions_to_run(
+        cls,
+        guidance: Optional[AdvisorGuidance],
+        work_dir: Path,
+        default_timeout: int = 60,
+        allow_trusted_fallback: bool = False,
+    ) -> List[ExecutionAction]:
+        """
+        Extracts execution plan from guidance or falls back to standard solver files ONLY
+        when explicitly authorized via allow_trusted_fallback=True.
+
+        Trust boundary invariants:
+        1. If guidance is present:
+           - Malformed structured JSON (validation_error) fails closed: return [].
+           - Prose guidance (unstructured next_actions or raw text) without an execution_plan: return [].
+           - Empty AdvisorGuidance() without an execution_plan: return [].
+           - Valid structured execution_plan: return list(execution_plan).
+           - Guidance NEVER enters trusted fallback, regardless of allow_trusted_fallback.
+        2. If guidance is None:
+           - allow_trusted_fallback=False: return [].
+           - allow_trusted_fallback=True: return _build_trusted_fallback_actions(...).
+        """
+        if guidance is not None:
+            if getattr(guidance, "validation_error", None):
+                return []
+            plan = getattr(guidance, "execution_plan", None)
+            if plan:
+                return list(plan)
+            # Empty AdvisorGuidance, prose text, or unstructured next_actions:
+            # Advisor output NEVER falls back to host solve.py/solve.sage!
+            return []
+
+        # Only when guidance is None AND caller explicitly asserts trust:
+        if allow_trusted_fallback:
+            return cls._build_trusted_fallback_actions(work_dir, default_timeout)
+
+        return []
 
     @classmethod
     def run_plan(
         cls,
         challenge_context: Dict[str, Any],
-        guidance: AdvisorGuidance,
+        guidance: Optional[AdvisorGuidance],
         work_dir: Path,
         input_dir: Path,
         single_action_executor: Callable[[ExecutionAction, Dict[str, Any]], Dict[str, Any]],
         flag_format_regex: str,
         default_timeout: int = 60,
+        allow_trusted_fallback: bool = False,
     ) -> ExecutionResult:
         """
         Runs the full execution plan using the provided single_action_executor callable.
@@ -79,7 +113,50 @@ class ExecutionRunner:
         iteration = challenge_context.get("iteration", 1)
         experiment_id = f"EXP-{iteration:03d}"
 
-        actions_to_run = cls.resolve_actions_to_run(guidance, work_dir, default_timeout)
+        actions_to_run = cls.resolve_actions_to_run(
+            guidance=guidance,
+            work_dir=work_dir,
+            default_timeout=default_timeout,
+            allow_trusted_fallback=allow_trusted_fallback,
+        )
+
+        if not actions_to_run:
+            if getattr(guidance, "validation_error", None):
+                err = f"Malformed structured guidance failed closed: {guidance.validation_error}"
+                return ExecutionResultEvaluator.build_result(
+                    experiment_id=experiment_id,
+                    return_code=-1,
+                    stdout="",
+                    stderr=err,
+                    actions_performed=["validation_error_fail_closed"],
+                    work_dir=work_dir,
+                    guidance=guidance,
+                    flag_format_regex=flag_format_regex,
+                    error_message=err,
+                )
+            if guidance and (getattr(guidance, "raw_text", None) or getattr(guidance, "next_actions", None)) and not getattr(guidance, "is_structured", False):
+                err = "Prose guidance and unstructured text actions cannot be executed. A structured JSON execution plan is required."
+                return ExecutionResultEvaluator.build_result(
+                    experiment_id=experiment_id,
+                    return_code=-1,
+                    stdout="",
+                    stderr=err,
+                    actions_performed=["prose_guidance_non_executable"],
+                    work_dir=work_dir,
+                    guidance=guidance,
+                    flag_format_regex=flag_format_regex,
+                    error_message=err,
+                )
+            return ExecutionResultEvaluator.build_result(
+                experiment_id=experiment_id,
+                return_code=0,
+                stdout="",
+                stderr="",
+                actions_performed=["no_actions_resolved"],
+                work_dir=work_dir,
+                guidance=guidance,
+                flag_format_regex=flag_format_regex,
+            )
 
         actions_performed: List[str] = []
         stdout_acc: List[str] = []

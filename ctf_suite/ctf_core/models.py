@@ -98,6 +98,8 @@ class AdvisorResult(BaseModel):
     guidance: Optional[AdvisorGuidance] = None
     provider: str = "oracle"
     message: str = ""
+    session_id: Optional[str] = None
+    raw_response: Optional[str] = None
 
 class ExecutionAction(BaseModel):
     kind: Literal[

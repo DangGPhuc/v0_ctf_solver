@@ -38,7 +38,7 @@ app = typer.Typer(
 )
 instance_app = typer.Typer(help="🐳 Quản lý dynamic container (start, stop, extend)")
 env_app = typer.Typer(help="⚙ Quản lý cấu hình xác thực tệp .env")
-advisor_app = typer.Typer(help="🧠 Strategic Advisor Multi-Agent Bridge (Anti-IDE/OpenCode ↔ ChatGPT Web via Oracle/PAL)")
+advisor_app = typer.Typer(help="🧠 Strategic Advisor Bridge (Anti-IDE/OpenCode ↔ ChatGPT Web via Oracle)")
 meta_app = typer.Typer(help="🧬 Dream-RSI Meta-Layer: Discovery Trees, Policies, Offline Replay & Declarative Memory")
 prompt_app = typer.Typer(help="📝 Prompt Master Engine: Contract Compiling, Linting & State Capsules")
 cleanup_app = typer.Typer(help="🧹 Quản lý dọn dẹp runtime tạm thời (challenge, event, all)")
