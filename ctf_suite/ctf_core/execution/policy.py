@@ -170,7 +170,8 @@ class ActionPolicy:
     ):
         """
         Inspects all argument tokens passed to an analysis tool.
-        Rejects external filesystem paths (e.g. /etc/passwd, ../../secret, /home/user/file).
+        Rejects external filesystem paths (e.g. /etc/passwd, ../../secret, /home/user/file)
+        and canonicalizes symlinks to ensure the resolved target remains inside input/ or work/.
         """
         resolved_input = input_dir.resolve()
         resolved_work = work_dir.resolve()
@@ -188,17 +189,17 @@ class ActionPolicy:
             if not val_str:
                 continue
 
-            # Check if value represents an artifact reference
+            # 1. Check if value represents an artifact reference
             if val_str.startswith("input:") or val_str.startswith("work:"):
                 try:
-                    resolved = ArtifactResolver.resolve_local(val_str, input_dir, work_dir, require_exists=False)
+                    resolved = ArtifactResolver.resolve_local(val_str, input_dir, work_dir, require_exists=False).resolve()
                 except (ArtifactResolutionError, PermissionError) as e:
                     raise ExecutionPolicyError(f"Tool argument violates artifact containment: {val_str} ({e})") from e
                 if not (resolved.is_relative_to(resolved_input) or resolved.is_relative_to(resolved_work)):
                     raise ExecutionPolicyError(f"Tool argument resolves outside challenge boundaries: {val_str}")
                 continue
 
-            # If the argument looks like an absolute path, home path, or relative path with traversal
+            # 2. Check if the argument is an absolute path, home path, or relative traversal path
             if (
                 val_str.startswith("/")
                 or val_str.startswith("~")
@@ -216,6 +217,31 @@ class ActionPolicy:
                 if not (resolved.is_relative_to(resolved_input) or resolved.is_relative_to(resolved_work)):
                     raise ExecutionPolicyError(
                         f"External path operand blocked by execution policy: '{val_str}' resolves to '{resolved}'"
+                    )
+                continue
+
+            # 3. Canonical symlink and local operand check:
+            # Inspect candidate paths in work_dir and input_dir to prevent symlink escape (e.g., work/link -> /etc/passwd)
+            cand_work = work_dir / val_str
+            if cand_work.is_symlink() or cand_work.exists():
+                try:
+                    resolved_work_cand = cand_work.resolve()
+                except Exception as e:
+                    raise ExecutionPolicyError(f"Failed to resolve operand '{val_str}': {e}") from e
+                if not (resolved_work_cand.is_relative_to(resolved_input) or resolved_work_cand.is_relative_to(resolved_work)):
+                    raise ExecutionPolicyError(
+                        f"Symlink or operand escapes challenge boundaries: '{val_str}' resolves to '{resolved_work_cand}'"
+                    )
+
+            cand_input = input_dir / val_str
+            if cand_input.is_symlink() or cand_input.exists():
+                try:
+                    resolved_input_cand = cand_input.resolve()
+                except Exception as e:
+                    raise ExecutionPolicyError(f"Failed to resolve operand '{val_str}': {e}") from e
+                if not (resolved_input_cand.is_relative_to(resolved_input) or resolved_input_cand.is_relative_to(resolved_work)):
+                    raise ExecutionPolicyError(
+                        f"Symlink or operand escapes challenge boundaries: '{val_str}' resolves to '{resolved_input_cand}'"
                     )
 
     @classmethod
