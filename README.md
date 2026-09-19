@@ -103,11 +103,11 @@ ctf cleanup all
 
 ### Execution Modes & Security
 
-The executor supports four explicit modes:
-- `--executor auto` (Default): Uses `ContainerExecutor` (Docker/Podman). If no container engine is active, fails safely to prevent untrusted code execution on host. Host fallback requires explicit `--allow-local-fallback`.
-- `--executor container`: Strict container isolation with dropped capabilities and `--network none`.
-- `--executor restricted-local`: Subprocess execution on host without `shell=True`, strictly containing paths inside `work_dir` and restricting binaries to an allowlist.
-- `--executor unsafe-local`: Direct host shell execution. Dangerous.
+The execution subsystem is governed by a canonical `ActionPolicy` and deterministic multi-action `ExecutionRunner`:
+- `--executor auto` (Default): Uses `ContainerExecutor` (Docker/Podman). If no container engine is active, fails safely (fail-closed) to prevent untrusted code execution on host. Host fallback requires explicit `--allow-local-fallback`.
+- `--executor container`: Strict container isolation with dropped capabilities (`--cap-drop ALL`), `no-new-privileges`, resource quotas (`--cpus=1`, `--memory=512m`), per-action timeouts, and `--network none` (isolated by default).
+- `--executor restricted-local`: Hardened subprocess execution on host without `shell=True`, governed by `ActionPolicy`. Operands are strictly verified against `input/` (read-only) and `work/` (read-write) boundaries (external paths like `/etc/passwd` or `../../` are rejected), tool names are limited to `ALLOWED_ANALYSIS_TOOLS`, and host secrets are stripped. **NOTE: `restricted-local` is a restricted process execution boundary, NOT equivalent to a full OS/kernel sandbox.**
+- `--executor unsafe-local`: Direct unconstrained host shell execution. Dangerous; strictly intended for controlled testing only.
 
 ### Remote Knowledge Management (`v0_ctf_knowledge`)
 
