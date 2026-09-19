@@ -6,6 +6,7 @@ from ..models import (
     ExecutionAction,
     ExecutionResult,
     Experiment,
+    ExperimentCandidate,
     ExperimentEvaluation,
     ExperimentProposal,
     Hypothesis,
@@ -14,12 +15,16 @@ from ..models import (
 from .evidence_evaluator import EvidenceEvaluator
 from .hypothesis_manager import HypothesisManager, UnknownHypothesisError
 from .ledger import ExperimentLedger, UnknownExperimentError
+from .planner import CandidateEvaluation, ExperimentPlanner, SelectionResult
+from .progress import SolverProgress, SolverProgressTracker, normalize_evidence_key
+from .signatures import are_experiments_equivalent, compute_experiment_signature
 
 __all__ = [
     "Hypothesis",
     "HypothesisRecord",
     "Experiment",
     "ExperimentProposal",
+    "ExperimentCandidate",
     "ExperimentEvaluation",
     "ExecutionAction",
     "ExecutionResult",
@@ -28,4 +33,12 @@ __all__ = [
     "ExperimentLedger",
     "UnknownExperimentError",
     "EvidenceEvaluator",
+    "ExperimentPlanner",
+    "SelectionResult",
+    "CandidateEvaluation",
+    "SolverProgress",
+    "SolverProgressTracker",
+    "normalize_evidence_key",
+    "compute_experiment_signature",
+    "are_experiments_equivalent",
 ]

@@ -37,6 +37,36 @@ Knowledge PR Publication (Automated branch creation & Pull Request via gh CLI)
 
 ---
 
+## 🧠 V3 Solver Intelligence (Evidence-Driven Hypothesis Loop)
+
+The autonomous solver operates on an evidence-driven scientific cycle rather than unstructured trial-and-error:
+
+```text
+Fingerprint → Knowledge Context → Advisor Proposals (ExperimentCandidates)
+    ↓
+ExperimentPlanner (Lexicographic deterministic ranking: Executability > Hypothesis State > Retry Suppression > Evidence Novelty > Cost tie-breaker)
+    ↓
+Canonical Experiment Allocation (System-owned EXP-xxx under atomic .advisor/.experiments.lock)
+    ↓
+ActionPolicy & ExecutionRunner (Multi-action typed pipeline: run_solver, run_binary, analysis_tool)
+    ↓
+Execution Backend (ContainerExecutor / RestrictedLocalExecutor with bounded I/O)
+    ↓
+Deterministic EvidenceEvaluator (CONFIRMED / REJECTED / INCONCLUSIVE / FLAG_FOUND)
+    ↓
+HypothesisManager & SolverProgressTracker (State update, new evidence accounting, deterministic stagnation detection)
+    ↓
+Continue / Refine / Pivot
+```
+
+### Production Boundary Hardening
+- **Atomic Concurrency-Safe Ledger**: `.advisor/.experiments.lock` ensures concurrent processes never receive duplicate canonical EXP IDs.
+- **Idempotent Flag Submission**: Multi-process reservation via `.submitted_flags.lock` prevents race-condition double-submissions on CTF platforms; plaintext flags are not persisted.
+- **Bounded Untrusted I/O**: `MAX_STDOUT_BYTES` (512 KB) and `DEFAULT_MAX_ATTACHMENT_BYTES` (50 MB) prevent host resource exhaustion. Stream truncation flags distinguish between complete and truncated output.
+- **Injection-Safe Metadata**: All challenge metadata (names, connection info, hints) are serialized via structured JSON (`json.dumps()`), eliminating code-injection vectors in generated solver templates.
+
+---
+
 ## 🚀 Quick Start
 
 ### 1. Requirements

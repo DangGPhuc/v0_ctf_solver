@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 import subprocess
@@ -22,6 +23,8 @@ class ExecutionRunner:
       - ActionPolicy rejects an action,
       - or a stop condition / flag is satisfied.
     """
+    MAX_STDOUT_BYTES: int = 512 * 1024  # 512 KB
+    MAX_STDERR_BYTES: int = 512 * 1024  # 512 KB
 
     @classmethod
     def _build_trusted_fallback_actions(
@@ -216,8 +219,19 @@ class ExecutionRunner:
                 stderr_acc.append(str(e))
                 break
 
+        max_stdout = int(os.environ.get("MAX_STDOUT_BYTES", cls.MAX_STDOUT_BYTES))
+        max_stderr = int(os.environ.get("MAX_STDERR_BYTES", cls.MAX_STDERR_BYTES))
+
         full_stdout = "\n".join(stdout_acc)
         full_stderr = "\n".join(stderr_acc)
+
+        stdout_truncated = len(full_stdout) > max_stdout
+        if stdout_truncated:
+            full_stdout = full_stdout[:max_stdout]
+
+        stderr_truncated = len(full_stderr) > max_stderr
+        if stderr_truncated:
+            full_stderr = full_stderr[:max_stderr]
 
         return ExecutionResultEvaluator.build_result(
             experiment_id=experiment_id,
@@ -230,4 +244,6 @@ class ExecutionRunner:
             flag_format_regex=flag_format_regex,
             timed_out=timed_out,
             error_message=error_msg,
+            stdout_truncated=stdout_truncated,
+            stderr_truncated=stderr_truncated,
         )

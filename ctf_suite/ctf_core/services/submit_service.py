@@ -161,6 +161,73 @@ class SubmitService:
                     fcntl.flock(lf.fileno(), fcntl.LOCK_UN)
         except Exception:
             pass
+    def _acquire_submission_reservation(
+        self, challenge_id: Any, flag: str, chall_name: str, timeout_seconds: int = 30
+    ) -> tuple[bool, Optional[str]]:
+        """
+        Atomically checks deduplication and acquires a PENDING reservation under exclusive lock.
+        Returns (acquired: bool, verdict: Optional[str]).
+        - If (True, None): Caller owns submission.
+        - If (False, verdict): Submission already completed or actively in-flight.
+        """
+        flag_clean = flag.strip()
+        target_hash = self._hash_flag(challenge_id, flag_clean)
+        lock_file = self.ledger_file.with_suffix(".lock")
+        lock_file.parent.mkdir(parents=True, exist_ok=True)
+
+        now = datetime.now(timezone.utc)
+        with open(lock_file, "w") as lf:
+            fcntl.flock(lf.fileno(), fcntl.LOCK_EX)
+            try:
+                latest_verdict = None
+                latest_time = None
+                if self.ledger_file.exists():
+                    for line in self.ledger_file.read_text(encoding="utf-8").splitlines():
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            record = json.loads(line)
+                            if record.get("hash") == target_hash or record.get("flag_hash") == target_hash:
+                                v = record.get("verdict")
+                                ts_str = record.get("timestamp")
+                                latest_verdict = v
+                                if ts_str:
+                                    try:
+                                        latest_time = datetime.fromisoformat(ts_str)
+                                    except Exception:
+                                        latest_time = None
+                        except json.JSONDecodeError:
+                            continue
+
+                # If final verdict exists and is non-retryable
+                if latest_verdict and latest_verdict not in ["ratelimited", "auth_failed", "error", "invalid_format", "pending"]:
+                    return False, latest_verdict
+
+                # If active pending reservation is fresh (< timeout_seconds)
+                if latest_verdict == "pending" and latest_time:
+                    elapsed = (now - latest_time).total_seconds()
+                    if elapsed < timeout_seconds:
+                        return False, "pending"
+
+                # Acquire reservation atomically by appending pending record
+                pending_entry = {
+                    "timestamp": now.isoformat(),
+                    "challenge_id": str(challenge_id),
+                    "challenge_name": chall_name,
+                    "flag_masked": self._mask_flag(flag_clean),
+                    "hash": target_hash,
+                    "flag_hash": target_hash,
+                    "verdict": "pending",
+                    "message": "Submission in progress",
+                }
+                with open(self.ledger_file, "a", encoding="utf-8") as f:
+                    f.write(json.dumps(pending_entry, ensure_ascii=False) + "\n")
+                self._ensure_secure_file(self.ledger_file)
+                return True, None
+            finally:
+                fcntl.flock(lf.fileno(), fcntl.LOCK_UN)
+
     def submit_right_away(self, challenge_id: Any, flag: str, strict: bool = False) -> SubmitResult:
         """Alias for submit() adhering to the immediate submission protocol."""
         return self.submit(challenge_id=challenge_id, flag=flag, strict=strict)
@@ -192,9 +259,18 @@ class SubmitService:
             else:
                 console.print(f"[bold yellow]⚠️ Warning: Flag does not match format '{self.flag_format}'![/bold yellow]")
 
-        # 2. Concurrency-protected Deduplication
-        prev_verdict = self.has_been_submitted(challenge_id, flag)
-        if prev_verdict:
+        # 2. Concurrency-protected Deduplication & Atomic Reservation
+        acquired, prev_verdict = self._acquire_submission_reservation(challenge_id, flag, chall_name)
+        if not acquired:
+            if prev_verdict == "pending":
+                console.print(f"[dim]⚡ Skipping: Flag submission is already actively in progress by another process.[/dim]")
+                return SubmitResult(
+                    verdict="pending",
+                    message="Flag submission is already in progress.",
+                    challenge_id=challenge_id,
+                    challenge_name=chall_name,
+                    flag=flag,
+                )
             console.print(f"[dim]⚡ Skipping: Flag has already been submitted with verdict [{prev_verdict}].[/dim]")
             return SubmitResult(
                 verdict=prev_verdict,
@@ -205,23 +281,32 @@ class SubmitService:
             )
 
         # 3. Submit to platform
-        raw_res = self.platform.submit_flag(challenge_id, flag)
-        if isinstance(raw_res, dict):
-            v_val = raw_res.get("status", raw_res.get("verdict", "unknown"))
+        try:
+            raw_res = self.platform.submit_flag(challenge_id, flag)
+            if isinstance(raw_res, dict):
+                v_val = raw_res.get("status", raw_res.get("verdict", "unknown"))
+                result = SubmitResult(
+                    verdict=v_val,
+                    message=raw_res.get("message", ""),
+                    challenge_id=challenge_id,
+                    challenge_name=chall_name,
+                    flag=flag,
+                )
+            else:
+                result = raw_res
+                result.challenge_name = chall_name
+        except Exception as e:
             result = SubmitResult(
-                verdict=v_val,
-                message=raw_res.get("message", ""),
+                verdict="error",
+                message=f"Platform submission failed: {e}",
                 challenge_id=challenge_id,
                 challenge_name=chall_name,
                 flag=flag,
             )
-        else:
-            result = raw_res
-            result.challenge_name = chall_name
 
-
-        # 4. Record to ledger
+        # 4. Record final verdict to ledger
         self._record_submission(challenge_id, flag, result)
+
 
         # 5. Handle result
         if result.verdict in ["correct", "already_solved"]:

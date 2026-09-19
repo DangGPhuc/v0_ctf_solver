@@ -73,16 +73,13 @@ Tạo thư mục `.advisor/` tại workspace của challenge:
   - **Level 2 (Active Hypothesis & Experiments)**: Giả thuyết hiện tại và thực nghiệm gần nhất từ `experiments.jsonl`.
   - **Level 3 (Focused Artifacts)**: Tối đa 50 dòng decompiled code hoặc tham số crypto then chốt (TUYỆT ĐỐI không gửi toàn bộ binary dump).
 - Oracle CLI gửi prompt sang Chrome đã login ChatGPT Web:
-  - Gắn kèm chỉ thị chiến lược từ `templates/advisor_system_prompt.md`.
-  - Bắt kết quả trả về, lưu vào `.advisor/guidance.md` và cập nhật `oracle_session` trong `state.json`.
+  - Bắt kết quả trả về: Advisor đề xuất danh sách `experiment_candidates` (tối đa 2-3 ứng viên, không sở hữu mã EXP).
+  - `ExperimentPlanner` xếp hạng từ điển chọn 1 ứng viên tối ưu (Executability > Hypothesis State > Retry Suppression > Evidence Novelty > Cost tie-breaker).
+  - `ExperimentLedger` cấp phát mã chuẩn tắc duy nhất `EXP-xxx` nguyên tử (`.advisor/.experiments.lock`).
 
 ### Bước 4: Thực Thi Nhiệm Vụ (Executor Action)
-- Executor (Anti-IDE / OpenCode) đọc `NEXT_ACTIONS` trong `.advisor/guidance.md`.
-- Tiến hành thực nghiệm:
-  - Viết micro-PoC trong `script/`.
-  - Chạy GDB, kiểm tra crash dump, trích xuất offset.
-  - Test payload qua network socket / HTTP request.
-  - Nếu gặp dynamic docker: Sử dụng `./ctf instance start <ID>` để lấy IP/Port.
+- Executor (Anti-IDE / OpenCode) nhận `ExecutionPlan` chuẩn tắc từ `EXP-xxx`.
+- Tiến hành thực nghiệm định kiểu an toàn qua `RestrictedLocalExecutor` hoặc `ContainerExecutor` (với giới hạn stream I/O).
 
 ### Bước 5: Đánh Giá & Báo Cáo (`./ctf advisor report <ID>`)
 - Executor so sánh kết quả thực tế với `EXPECTED_RESULTS` của Advisor.

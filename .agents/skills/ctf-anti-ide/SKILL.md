@@ -58,13 +58,21 @@ All commands can be invoked via `ctf` (or `python -m ctf_core.cli.main`):
 - Bóc tách kiến trúc, binary mitigations (checksec), web/crypto primitives qua `FingerprintEngine`.
 - Tự động truy vấn Thẻ Tri Thức từ repo ngoại vi `DangGPhuc/v0_ctf_knowledge` qua GitHub Contents API.
 
-### Bước 3: Tham Vấn Cố Vấn Chiến Lược (`Strategic Advisor`)
+### Bước 3: Tham Vấn Cố Vấn Chiến Lược & Lập Kế Hoạch Thực Nghiệm (`Strategic Advisor` & `ExperimentPlanner`)
 - Tổng hợp `StateCapsule` (Dữ kiện đã xác minh, giả thuyết active, kết quả thực nghiệm gần nhất, hints từ bài tương tự).
-- Advisor trả về bản định hướng kèm **khối JSON `execution_plan` định kiểu** bắt buộc.
-- CẤM chạy trực tiếp văn bản tự do; chỉ thực thi các `ExecutionAction` đã qua kiểm định policy.
+- Advisor trả về bản định hướng kèm danh sách **`experiment_candidates` (tối đa 2-3 ứng viên, không sở hữu mã EXP)**.
+- `ExperimentPlanner` xếp hạng từ điển (Lexicographic ranking):
+  1. Tính khả thi (Executability & tool allowlist)
+  2. Trạng thái giả thuyết (`active` > `proposed` > `rejected`)
+  3. Ngăn chặn thử lại vô ích (`Retry Suppression` đối với thực nghiệm thất bại gần đây)
+  4. Đích bằng chứng mới (`Evidence Novelty`)
+  5. Khả năng phân biệt giả thuyết (`Discriminative Value`)
+  6. Chi phí thấp làm tiêu chí phụ (`Cost tie-breaker`)
+- `ExperimentLedger` cấp phát mã chuẩn tắc `EXP-xxx` nguyên tử (`.advisor/.experiments.lock`). Advisor tuyệt đối KHÔNG sở hữu hay gán mã EXP.
 
 ### Bước 4: Thực Thi Sandbox Cách Ly (`ContainerExecutor` / `RestrictedLocalExecutor`)
 - **Container Sandbox**: Chạy `--cap-drop=ALL`, `--security-opt=no-new-privileges`, `--network=none` mặc định.
+- **Bounded I/O**: Giới hạn stream `MAX_STDOUT_BYTES` (512 KB) và `DEFAULT_MAX_ATTACHMENT_BYTES` (50 MB) tránh tràn tài nguyên.
 - **Ranh giới Artifacts**:
   - `input:<file>`: Mount `/input:ro` (chỉ đọc, tuyệt đối không chỉnh sửa binary gốc).
   - `work:<file>`: Mount `/work:rw` (chứa `solve.py` / `solve.sage`, micro-PoCs, logs).

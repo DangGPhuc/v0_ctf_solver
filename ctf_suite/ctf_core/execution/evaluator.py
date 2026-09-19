@@ -24,6 +24,8 @@ class ExecutionResultEvaluator:
         flag_format_regex: str = r"FLAG\{[^\n\r\}]+\}",
         timed_out: bool = False,
         error_message: Optional[str] = None,
+        stdout_truncated: Optional[bool] = None,
+        stderr_truncated: Optional[bool] = None,
     ) -> ExecutionResult:
         combined_out = (stdout or "") + "\n" + (stderr or "")
         flag_candidates: List[str] = []
@@ -84,9 +86,9 @@ class ExecutionResultEvaluator:
             status = "REJECTED"
 
         MAX_TAIL = 1500
-        stdout_truncated = len(stdout or "") > MAX_TAIL
-        stderr_truncated = len(stderr or "") > MAX_TAIL
-        output_complete = not (stdout_truncated or stderr_truncated)
+        is_stdout_truncated = bool(stdout_truncated) or (len(stdout or "") > MAX_TAIL)
+        is_stderr_truncated = bool(stderr_truncated) or (len(stderr or "") > MAX_TAIL)
+        output_complete = not (is_stdout_truncated or is_stderr_truncated)
 
         stdout_tail = stdout[-MAX_TAIL:] if stdout else ""
         stderr_tail = stderr[-MAX_TAIL:] if stderr else ""
@@ -115,7 +117,7 @@ class ExecutionResultEvaluator:
             flag_candidates=flag_candidates,
             stdout_tail=stdout_tail,
             stderr_tail=stderr_tail,
-            stdout_truncated=stdout_truncated,
-            stderr_truncated=stderr_truncated,
+            stdout_truncated=is_stdout_truncated,
+            stderr_truncated=is_stderr_truncated,
             output_complete=output_complete,
         )

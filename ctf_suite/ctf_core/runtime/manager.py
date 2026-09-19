@@ -219,16 +219,30 @@ class RuntimeManager:
             host = parts[0]
             port = parts[1]
 
+        # Sanitize metadata to prevent code injection into generated solver scripts
+        clean_comment_name = re.sub(r'[\r\n]+', ' ', str(challenge.name or "Unnamed"))
+        clean_comment_cat = re.sub(r'[\r\n]+', ' ', str(challenge.category or "misc"))
+        clean_comment_conn = re.sub(r'[\r\n]+', ' ', str(challenge.connection_info or "N/A"))
+
+        safe_host_literal = json.dumps(host or "localhost")
+        try:
+            safe_port_literal = int(port) if port else 1337
+        except (ValueError, TypeError):
+            safe_port_literal = 1337
+
+        safe_url_literal = json.dumps(conn if conn.startswith("http") else "")
+        safe_name_literal = json.dumps(str(challenge.name or "challenge"))
+
         if tpl_path.is_file():
             content = tpl_path.read_text(encoding="utf-8")
             is_sage = tpl_path.suffix == ".sage"
             shebang = "#!/usr/bin/env sage\n" if is_sage else "#!/usr/bin/env python3\n"
-            header = f"{shebang}# Solver for: {challenge.name} ({challenge.category})\n# Connection: {challenge.connection_info or 'N/A'}\n"
+            header = f"{shebang}# Solver for: {clean_comment_name} ({clean_comment_cat})\n# Connection: {clean_comment_conn}\n"
             if host:
-                header += f'HOST = "{host}"\n'
+                header += f'HOST = {safe_host_literal}\n'
             if port:
-                header += f'PORT = {port}\n'
-            header += f'TARGET_URL = "{conn if conn.startswith("http") else ""}"\n\n'
+                header += f'PORT = {safe_port_literal}\n'
+            header += f'TARGET_URL = {safe_url_literal}\n\n'
             for prefix in ["#!/usr/bin/env python3\n", "#!/usr/bin/env sage\n"]:
                 if content.startswith(prefix):
                     content = content[len(prefix):]
@@ -236,19 +250,18 @@ class RuntimeManager:
             target.write_text(content, encoding="utf-8")
             return
 
-
         content = f"""#!/usr/bin/env python3
-# Solver for: {challenge.name} ({challenge.category})
-# Connection: {challenge.connection_info or "N/A"}
-HOST = "{host or 'localhost'}"
-PORT = {port or 1337}
-TARGET_URL = "{conn if conn.startswith('http') else ''}"
+# Solver for: {clean_comment_name} ({clean_comment_cat})
+# Connection: {clean_comment_conn}
+HOST = {safe_host_literal}
+PORT = {safe_port_literal}
+TARGET_URL = {safe_url_literal}
 
 import sys
 import os
 
 def solve():
-    print("[*] Running solver for {challenge.name}...")
+    print(f"[*] Running solver for {safe_name_literal}...")
 
 if __name__ == "__main__":
     solve()

@@ -79,6 +79,8 @@ class DownloadManager:
         self.anon_client.close()
         self.auth_client.close()
 
+    DEFAULT_MAX_ATTACHMENT_BYTES: int = 50 * 1024 * 1024  # 50 MB
+
     def _sanitize_filename(self, filename: Optional[str], fallback: str = "attachment") -> str:
         if not filename:
             return fallback
@@ -88,14 +90,51 @@ class DownloadManager:
         name = name.replace("..", "").strip()
         return name or fallback
 
-    def _stream_download(self, client: httpx.Client, url: str, dest_file: Path, headers: Optional[Dict[str, str]] = None) -> bool:
-        with client.stream("GET", url, headers=headers) as resp:
-            if resp.status_code != 200:
-                return False
-            with open(dest_file, "wb") as f:
-                for chunk in resp.iter_bytes(chunk_size=8192):
-                    f.write(chunk)
+    def _stream_download(
+        self,
+        client: httpx.Client,
+        url: str,
+        dest_file: Path,
+        headers: Optional[Dict[str, str]] = None,
+        max_bytes: Optional[int] = None,
+    ) -> bool:
+        limit = max_bytes or int(os.environ.get("MAX_ATTACHMENT_BYTES", self.DEFAULT_MAX_ATTACHMENT_BYTES))
+        part_file = dest_file.with_name(f"{dest_file.name}.part")
+        try:
+            with client.stream("GET", url, headers=headers) as resp:
+                if resp.status_code != 200:
+                    return False
+                cl_header = resp.headers.get("Content-Length")
+                if cl_header:
+                    try:
+                        content_length = int(cl_header)
+                        if content_length > limit:
+                            console.print(f"[bold red]❌ Attachment Content-Length ({content_length} bytes) exceeds limit ({limit} bytes): {url}[/bold red]")
+                            return False
+                    except ValueError:
+                        pass
+
+                total_downloaded = 0
+                with open(part_file, "wb") as f:
+                    for chunk in resp.iter_bytes(chunk_size=8192):
+                        total_downloaded += len(chunk)
+                        if total_downloaded > limit:
+                            console.print(f"[bold red]❌ Attachment download exceeded limit ({limit} bytes): {url}[/bold red]")
+                            return False
+                        f.write(chunk)
+
+            # Atomically replace destination with fully downloaded file
+            part_file.replace(dest_file)
             return True
+        except Exception as e:
+            console.print(f"[red]❌ Streaming download error: {e}[/red]")
+            return False
+        finally:
+            if part_file.exists():
+                try:
+                    part_file.unlink()
+                except Exception:
+                    pass
 
     def download_file(self, url: str, target_dir: Path, suggested_name: Optional[str] = None) -> Optional[Path]:
         """Downloads a file safely to target_dir with path traversal verification and origin-aware credentials."""
@@ -149,18 +188,17 @@ class DownloadManager:
                     ok = self._stream_download(self.anon_client, full_redirect_url, dest_file)
                 return dest_file if ok else None
 
-
             if resp.status_code == 200:
-                with open(dest_file, "wb") as f:
-                    for chunk in resp.iter_bytes(chunk_size=8192):
-                        f.write(chunk)
-                return dest_file
+                # Route through stream download for uniform bounding and atomic placement
+                ok = self._stream_download(self.auth_client, url, dest_file)
+                return dest_file if ok else None
             else:
                 console.print(f"[yellow]⚠️ Download failed ({resp.status_code}): {url}[/yellow]")
                 return None
         except Exception as e:
             console.print(f"[red]❌ Error downloading {url}: {e}[/red]")
             return None
+
 
     def download_attachments(
         self,

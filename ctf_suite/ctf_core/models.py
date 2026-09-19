@@ -10,6 +10,7 @@ SubmitVerdict = Literal[
     "auth_failed",
     "invalid_format",
     "error",
+    "pending",
 ]
 
 class ContainerInfo(BaseModel):
@@ -147,6 +148,19 @@ class ExperimentProposal(BaseModel):
     expected_evidence: List[str] = Field(default_factory=list)
     contradicting_evidence: List[str] = Field(default_factory=list)
 
+class ExperimentCandidate(BaseModel):
+    hypothesis_id: str
+    intent: str
+    execution_plan: List[ExecutionAction] = Field(default_factory=list)
+    expected_evidence: List[str] = Field(default_factory=list)
+    contradicting_evidence: List[str] = Field(default_factory=list)
+    rationale: Optional[str] = None
+    evidence_novelty_targets: List[str] = Field(default_factory=list)
+    estimated_cost_class: Literal["low", "medium", "high"] = "low"
+    source: str = "advisor"
+    candidate_id: Optional[str] = None
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
 class Action(BaseModel):
     type: str = "command"
     command_or_task: str
@@ -156,6 +170,7 @@ class AdvisorGuidance(BaseModel):
     assessment: str = ""
     hypotheses: List[Hypothesis] = Field(default_factory=list)
     experiment: Optional[ExperimentProposal] = None
+    experiment_candidates: List[ExperimentCandidate] = Field(default_factory=list)
     # Legacy/read-only compatibility field. MUST NOT be written directly to ExperimentLedger.
     experiments: List[Experiment] = Field(default_factory=list)
     execution_plan: List[ExecutionAction] = Field(default_factory=list)

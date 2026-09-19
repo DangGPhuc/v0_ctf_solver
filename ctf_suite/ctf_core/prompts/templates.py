@@ -116,24 +116,27 @@ class CTFTemplates:
             f'    {{"id": "H1", "statement": "<testable claim>", "confidence": 0.8, "rationale": "<why>"}},\n'
             f'    {{"id": "H2", "statement": "<alternative>", "confidence": 0.5, "rationale": "<why>"}}\n'
             f'  ],\n'
-            f'  "experiment": {{\n'
-            f'    "hypothesis_id": "H1",\n'
-            f'    "intent": "<what exactly this experiment tests>",\n'
-            f'    "expected_evidence": [\n'
-            f'      "<observation that supports H1>"\n'
-            f'    ],\n'
-            f'    "contradicting_evidence": [\n'
-            f'      "<observation that directly contradicts H1>"\n'
-            f'    ],\n'
-            f'    "execution_plan": [\n'
-            f'      {{"kind": "analysis_tool", "tool": "checksec", "argv": ["checksec", "--file=input:vuln"], "timeout": 20}}\n'
-            f'    ]\n'
-            f'  }},\n'
+            f'  "experiment_candidates": [\n'
+            f'    {{\n'
+            f'      "hypothesis_id": "H1",\n'
+            f'      "intent": "<what this experiment tests>",\n'
+            f'      "expected_evidence": ["<observation that supports H1>"],\n'
+            f'      "contradicting_evidence": ["<observation that contradicts H1>"],\n'
+            f'      "execution_plan": [\n'
+            f'        {{"kind": "analysis_tool", "tool": "checksec", "argv": ["checksec", "--file=input:vuln"], "timeout": 20}}\n'
+            f'      ],\n'
+            f'      "estimated_cost_class": "low"\n'
+            f'    }}\n'
+            f'  ],\n'
             f'  "stop_conditions": [\n'
             f'    "<when executor should stop>"\n'
             f'  ]\n'
             f"}}\n"
             f"```\n"
-            f"Supported kinds: run_solver, run_python_file, run_sage_file, run_binary, analysis_tool, read_file, list_files.\n"
+            f"System Capabilities & Constraints:\n"
+            f"- Supported action kinds: run_solver, run_python_file, run_sage_file, run_binary, analysis_tool, read_file, list_files.\n"
+            f"- Allowed analysis tools: file, strings, readelf, objdump, checksec, nm, ltrace, strace, ropper, seccomp-tools.\n"
+            f"- Single 'experiment' or up to 3 'experiment_candidates' may be proposed.\n"
+            f"- Arbitrary shell commands, unapproved tools, and host path escapes are rejected.\n"
         )
 

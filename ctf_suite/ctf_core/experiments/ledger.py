@@ -1,4 +1,6 @@
+from contextlib import contextmanager
 from datetime import datetime
+import fcntl
 import json
 from pathlib import Path
 import re
@@ -17,6 +19,18 @@ class UnknownExperimentError(KeyError):
     pass
 
 
+@contextmanager
+def _ledger_lock(lock_path: Path):
+    """Acquires an exclusive advisory lock on the ledger lock file."""
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(lock_path, "a", encoding="utf-8") as lf:
+        fcntl.flock(lf.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lf.fileno(), fcntl.LOCK_UN)
+
+
 class ExperimentLedger:
     """
     Canonical challenge-local experiment history writer and reader.
@@ -25,6 +39,7 @@ class ExperimentLedger:
     Invariants:
       - Canonical writer: All experiment outcomes and attempts are recorded here.
       - System-owned IDs: Ledger generates and controls sequential stable IDs (EXP-001, EXP-002).
+      - Concurrency-safe: Atomically allocates sequential IDs under challenge-local lock.
       - Resilient: Malformed lines never crash the reader.
       - Challenge-local: Strictly confined to challenge runtime directory.
       - No credentials/secrets persisted.
@@ -37,6 +52,7 @@ class ExperimentLedger:
         else:
             self.ledger_file = p
         self.ledger_file.parent.mkdir(parents=True, exist_ok=True)
+        self.lock_file = self.ledger_file.parent / ".experiments.lock"
 
     def next_experiment_id(self) -> str:
         """Generates next stable sequential experiment ID (e.g. EXP-001, EXP-002)."""
@@ -58,29 +74,30 @@ class ExperimentLedger:
         experiment_id: Optional[str] = None,
     ) -> Experiment:
         """
-        Creates and appends a new pending experiment.
+        Creates and appends a new pending experiment atomically under lock.
         The System (not the Advisor) owns canonical experiment IDs.
         """
-        # System authority: always assign the canonical sequential ID
-        exp_id = self.next_experiment_id()
-        exp = Experiment(
-            experiment_id=exp_id,
-            hypothesis_id=hypothesis_id,
-            intent=intent,
-            execution_plan=actions or [],
-            expected_evidence=expected_evidence or [],
-            contradicting_evidence=contradicting_evidence or [],
-            outcome="pending",
-            created_at=datetime.now().isoformat(),
-        )
-        self.append(exp)
-        return exp
+        with _ledger_lock(self.lock_file):
+            exp_id = self.next_experiment_id()
+            exp = Experiment(
+                experiment_id=exp_id,
+                hypothesis_id=hypothesis_id,
+                intent=intent,
+                execution_plan=actions or [],
+                expected_evidence=expected_evidence or [],
+                contradicting_evidence=contradicting_evidence or [],
+                outcome="pending",
+                created_at=datetime.now().isoformat(),
+            )
+            self.append(exp)
+            return exp
 
     def append(self, experiment: Experiment) -> None:
         """Appends an experiment record to the canonical JSONL ledger."""
         entry = self._serialize_entry(experiment)
         with open(self.ledger_file, "a", encoding="utf-8") as f:
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
 
     def get(self, experiment_id: str) -> Optional[Experiment]:
         """Retrieves an experiment by ID."""
