@@ -14,6 +14,13 @@ from rich.table import Table
 from ..models import Challenge, AdvisorGuidance, Hypothesis, Action, ExecutionResult, AdvisorResult
 from ..runtime.manager import RuntimeManager
 from ..advisor.browser_bridge import BrowserBridge
+from ..advisor import (
+    ContextBuilder,
+    GuidanceParser,
+    BaseAdvisorProvider,
+    OracleAdvisorProvider,
+    ManualAdvisorProvider,
+)
 from ..triage.static import StaticTriage
 from ..knowledge.provider import KnowledgeProvider
 from ..knowledge.github_provider import GitHubKnowledgeProvider
@@ -74,6 +81,10 @@ class AdvisorService:
             )
         else:
             self.knowledge_provider = GitHubKnowledgeProvider(offline=True)
+
+        self.context_builder = ContextBuilder(knowledge_provider=self.knowledge_provider, policy=self.policy)
+        self.guidance_parser = GuidanceParser
+        self.advisor_provider = OracleAdvisorProvider()
 
     def _find_chall_dir(self, challenge_id: Any) -> Path:
         cp = self.runtime_manager.challenge_path(self.event_id, challenge_id)
@@ -312,154 +323,12 @@ class AdvisorService:
 
         meta = self.runtime_manager.read_challenge_state(self.event_id, challenge_id) or {}
         state = json.loads((advisor_dir / "state.json").read_text(encoding="utf-8"))
-
-        name = meta.get("name", f"Challenge_{challenge_id}")
-        category = meta.get("category", "Misc")
-        points = meta.get("points", 0)
-        desc = meta.get("description", "Không có mô tả.")
-        conn = meta.get("connection_info", "")
-        hints = meta.get("hints", [])
-
-        hints_text = (
-            "\n".join([f"- Hint: {h.get('content', str(h)) if isinstance(h, dict) else str(h)}" for h in hints])
-            if hints
-            else "*Không có hint.*"
-        )
-
-        # 1. Thu thập Knowledge Cards tương tự qua KnowledgeProvider với Challenge Fingerprint đa chiều
-        retrieved_cards: List[RetrievedKnowledgeContext] = []
-        retrieval_status: str = "SUCCESS"
-        retrieval_error: Optional[str] = None
-
-        try:
-            active_hypo_stmt = None
-            active_h_id = state.get("active_hypothesis_id") or state.get("active_hypothesis")
-            hypotheses_list = state.get("hypotheses", [])
-            if active_h_id and hypotheses_list:
-                for h in hypotheses_list:
-                    h_id = h.get("id") if isinstance(h, dict) else getattr(h, "id", "")
-                    if h_id == active_h_id:
-                        active_hypo_stmt = h.get("statement") if isinstance(h, dict) else getattr(h, "statement", "")
-                        break
-            if not active_hypo_stmt and isinstance(state.get("active_hypothesis"), str) and not state.get("active_hypothesis", "").startswith("H"):
-                active_hypo_stmt = state.get("active_hypothesis")
-
-            kq = self._build_knowledge_query(
-                meta=meta,
-                chall_dir=chall_dir,
-                active_hypothesis=active_hypo_stmt,
-            )
-            hits = self.knowledge_provider.search(kq, limit=5)
-            if not hits:
-                retrieval_status = "NO_MATCH"
-            else:
-                for h in hits:
-                    doc = self.knowledge_provider.fetch(h)
-                    if doc:
-                        retrieved_cards.append(RetrievedKnowledgeContext.from_doc(doc, confidence=h.score))
-        except Exception as e:
-            err_str = str(e).lower()
-            if "offline" in err_str:
-                retrieval_status = "OFFLINE"
-            elif any(k in err_str for k in ["401", "403", "auth", "credential", "unauthorized"]):
-                retrieval_status = "AUTH_FAILED"
-            elif any(k in err_str for k in ["timeout", "connection", "network", "unavailable"]):
-                retrieval_status = "REMOTE_UNAVAILABLE"
-            elif any(k in err_str for k in ["json", "parse", "decode"]):
-                retrieval_status = "PARSE_ERROR"
-            else:
-                retrieval_status = "INTERNAL_ERROR"
-            retrieval_error = str(e)
-            console.print(f"[yellow]⚠️ Knowledge retrieval failed [{retrieval_status}]: {e}. Continuing with 0 retrieved cards.[/yellow]")
-
-
-        # 2. Xây dựng State Capsule (chắt lọc tri thức xác thực, tránh tràn context)
-        depth = self.policy.prompt_policy.get("recent_nodes_depth", 4)
-        state_capsule = PromptCompiler.build_state_capsule(
+        return self.context_builder.compile(
+            challenge_id=challenge_id,
             chall_dir=chall_dir,
+            meta=meta,
             state=state,
-            max_recent=depth,
-            retrieved_cards=retrieved_cards,
         )
-
-        # 3. Thu thập Focus Artifacts (Solver preview)
-        max_lines = self.policy.executor.get("max_raw_log_lines", 40)
-        solver_file = chall_dir / "work" / "solve.py"
-        solver_snippet = None
-        if solver_file.exists():
-            content = solver_file.read_text(encoding="utf-8")
-            solver_snippet = "\n".join(content.splitlines()[:max_lines])
-
-        context_artifacts = {
-            "challenge_metadata": (
-                f"- Tên bài: {name} (ID: {challenge_id}) | Category: {category} | Points: {points}\n"
-                f"- Connection: {conn or 'Chưa có'}\n\n"
-                f"**Đề bài**:\n{desc}\n\n"
-                f"**Gợi ý**:\n{hints_text}"
-            ),
-        }
-        if solver_snippet:
-            context_artifacts["solver_preview"] = f"```python\n{solver_snippet}\n```"
-
-        active_hypo = state.get("active_hypothesis")
-        task_obj = (
-            f"Phân tích chiến lược giải bài CTF {name} ({category}). "
-            + (f"Kiểm chứng giả thuyết đang kích hoạt: {active_hypo}" if active_hypo and active_hypo != "Chưa xác định" else "Đề xuất các giả thuyết khai thác khả dĩ và kế hoạch hành động chi tiết.")
-        )
-
-        spec = PromptSpec(
-            task_objective=task_obj,
-            target_agent="advisor",
-            state_capsule=state_capsule,
-            allowed_scope=[
-                f"Phân tích artifacts trong thư mục challenge '{chall_dir.name}'",
-                "Sử dụng IDA Pro MCP / Ghidra để decompile logic",
-                "Chạy debugger (GDB/GEF/Pwntools) trong container/môi trường",
-                f"Kết nối tới challenge server ({conn or 'local binary'})",
-            ],
-            forbidden_scope=[
-                "Không hallucinate flag format hoặc địa chỉ hàm không tồn tại",
-                "Không chạy bruteforce ngẫu nhiên không có cơ sở lý thuyết",
-                "Không lặp lại các giả thuyết đã bị bác bỏ (Rejected) trong State Capsule",
-            ],
-            stop_conditions=[
-                "Giả thuyết được xác nhận (CONFIRMED) bởi leak bộ nhớ hoặc thực thi thành công",
-                "Giả thuyết bị bác bỏ (REJECTED) do logic code hoàn toàn mâu thuẫn",
-                "Sau 2 lần thực nghiệm liên tiếp không thu được thêm bằng chứng mới",
-            ],
-            evidence_contract=[
-                "Giá trị thanh ghi, offset hàm hoặc câu lệnh C sau decompile chính xác",
-                "Output từ debugger hoặc phản hồi mạng có thể tái lập",
-                "Phân tích khác biệt (analysis_diff) giữa kỳ vọng và thực tế",
-            ],
-            success_criteria=[
-                "Đề xuất tối đa 2 giả thuyết xếp hạng (H1, H2) kèm giả định rõ ràng",
-                "Lệnh hoặc script cụ thể cho Executor thực hiện ngay lập tức",
-                "Chỉ định rõ điều kiện dừng và các nhánh cần cắt tỉa (prune)",
-            ],
-            output_schema="Auditable Reasoning (Template E - 6 phần chuẩn)",
-            target_backend="chatgpt",
-            context_artifacts=context_artifacts,
-        )
-
-        full_prompt, violations = PromptCompiler.compile_advisor_prompt(
-            spec,
-            auto_repair=True,
-        )
-
-        return {
-            "challenge_id": str(challenge_id),
-            "challenge_name": name,
-            "full_prompt": full_prompt,
-            "state": state,
-            "advisor_dir": advisor_dir,
-            "spec": spec,
-            "state_capsule": state_capsule,
-            "retrieval_status": retrieval_status,
-            "retrieval_error": retrieval_error,
-            "retrieved_cards": retrieved_cards,
-            "violations": violations,
-        }
 
 
     def _load_system_prompt(self) -> str:
@@ -653,70 +522,7 @@ class AdvisorService:
     @staticmethod
     def parse_advisor_response(text: str) -> AdvisorGuidance:
         """Parse advisor markdown/text output into structured AdvisorGuidance."""
-        if not text:
-            return AdvisorGuidance(raw_text="")
-        
-        # 1. Try to extract JSON codeblock (Mandatory Structured Execution Plan)
-        json_match = re.search(r"```(?:json)?\s*(\{[\s\S]*?\})\s*```", text)
-        if json_match:
-            try:
-                data = json.loads(json_match.group(1))
-                if isinstance(data, dict):
-                    data["raw_text"] = text
-                    guidance = AdvisorGuidance.model_validate(data)
-                    guidance.is_structured = True
-                    return guidance
-            except Exception as e:
-                return AdvisorGuidance(
-                    raw_text=text,
-                    validation_error=f"Malformed or invalid structured JSON payload: {e}",
-                    is_structured=False,
-                )
-
-        # 2. Heuristic parsing for human-readable display only.
-        # CRITICAL INVARIANT: execution_plan remains empty. Prose next_actions is NEVER execution authority.
-        assessment = ""
-        ass_m = re.search(r"(?i)(?:assessment|root cause|phân tích)[:\s]+([^\n]+)", text)
-        if ass_m:
-            assessment = ass_m.group(1).strip()
-        else:
-            first_lines = [l.strip() for l in text.splitlines() if l.strip() and not l.startswith("#")]
-            assessment = first_lines[0] if first_lines else "Initial assessment"
-
-        hypotheses: List[Hypothesis] = []
-        hypo_matches = re.findall(r"(?i)(?:H\d+|Hypothesis\s*\d+)[:\s]+([^\n]+)", text)
-        for idx, h_text in enumerate(hypo_matches, 1):
-            hypotheses.append(Hypothesis(id=f"H{idx}", statement=h_text.strip()))
-        if not hypotheses:
-            hypotheses.append(Hypothesis(id="H1", statement="Inspect binary and test exploit payload"))
-
-        next_actions: List[Action] = []
-        actions_matches = re.findall(r"(?i)(?:Action\s*\d*|Step\s*\d*|\d+\.)[:\s]+([^\n]+)", text)
-        for act_text in actions_matches:
-            act_s = act_text.strip()
-            if len(act_s) > 5 and not any(kw in act_s.lower() for kw in ["hypothesis", "assessment"]):
-                next_actions.append(Action(type="command", command_or_task=act_s))
-
-        requested_evidence: List[str] = []
-        ev_m = re.findall(r"(?i)(?:evidence|proof)[:\s]+([^\n]+)", text)
-        for ev in ev_m:
-            requested_evidence.append(ev.strip())
-
-        stop_conditions: List[str] = []
-        stop_m = re.findall(r"(?i)(?:stop condition|dừng khi)[:\s]+([^\n]+)", text)
-        for sc in stop_m:
-            stop_conditions.append(sc.strip())
-
-        return AdvisorGuidance(
-            assessment=assessment,
-            hypotheses=hypotheses,
-            execution_plan=[],
-            next_actions=next_actions,
-            requested_evidence=requested_evidence,
-            stop_conditions=stop_conditions,
-            raw_text=text,
-            is_structured=False,
-        )
+        return GuidanceParser.parse(text)
 
 
     def _build_oracle_command(self, prompt: str, oracle_session: Optional[str] = None) -> Optional[List[str]]:
@@ -926,12 +732,13 @@ class AdvisorService:
             f"{open_questions or 'Advisor vui lòng thẩm định bằng chứng trên và chỉ dẫn bước tiếp theo.'}\n"
         )
 
-    def escalate_pal(self, challenge_id: Any, reason: str) -> Dict[str, Any]:
+    def escalate_strategic(self, challenge_id: Any, reason: str) -> Dict[str, Any]:
         """
-        Kích hoạt tầng thẩm định chéo PAL MCP khi ChatGPT Web bị sa lầy (tunnel vision):
-        - Tạo prompt chất vấn giả định (Challenge Assumptions)
-        - Đóng gói phản biện gửi lại cho Strategic Advisor
-        - Ghi nút escalation vào DiscoveryTree
+        Strategic Assumption Challenge & Escalation Reframe:
+        Chất vấn giả định hiện tại khi tiến trình bị bế tắc (tunnel vision).
+        Đóng gói phản biện gửi lại cho Strategic Advisor để mở rộng không gian tìm kiếm.
+        (Ghi chú trung thực: Đây là cơ chế reframe prompt chất vấn giả định,
+         không phải multi-model consensus).
         """
         chall_dir = self._find_chall_dir(challenge_id)
         advisor_dir = chall_dir / ".advisor"
@@ -942,8 +749,8 @@ class AdvisorService:
         active_hypo = state.get("active_hypothesis", "Chưa rõ")
 
         escalation_prompt = (
-            f"### PAL ESCALATION REVIEW: CHALLENGE ASSUMPTIONS\n"
-            f"Hội đồng thẩm định độc lập (PAL Consensus) được kích hoạt cho bài: {name}\n"
+            f"### STRATEGIC ESCALATION REVIEW: CHALLENGE ASSUMPTIONS\n"
+            f"Cơ chế chất vấn giả định chiến lược được kích hoạt cho bài: {name}\n"
             f"- **Giả thuyết hiện tại bị bế tắc**: {active_hypo}\n"
             f"- **Lý do bế tắc**: {reason}\n\n"
             f"Yêu cầu: Hãy phản biện nghiêm ngặt giả định trên. Chỉ ra các góc khuất kỹ thuật "
@@ -959,7 +766,7 @@ class AdvisorService:
             event_type="escalation",
             actor="evaluator",
             parent_id=state.get("last_node_id") or recorder.tree.root_id,
-            node_name="PAL Escalation Review",
+            node_name="Strategic Assumption Escalation Review",
             payload={"reason": reason, "active_hypothesis": active_hypo},
             status="active",
         )
@@ -971,10 +778,13 @@ class AdvisorService:
         state["last_updated"] = datetime.datetime.now().isoformat()
         state_file.write_text(json.dumps(state, indent=2, ensure_ascii=False), encoding="utf-8")
 
-        console.print(f"[bold green]✔ Đã khởi tạo hồ sơ thẩm định chéo PAL tại: {escalation_file.name}[/bold green]")
+        console.print(f"[bold green]✔ Đã khởi tạo hồ sơ chất vấn chiến lược tại: {escalation_file.name}[/bold green]")
         console.print("[cyan]Đang gửi hồ sơ phản biện vào phiên làm việc của Strategic Advisor...[/cyan]")
-
         return self.consult(challenge_id, extra_instruction=escalation_prompt)
+
+    def escalate_pal(self, challenge_id: Any, reason: str) -> Dict[str, Any]:
+        """Backward-compatible alias for escalate_strategic."""
+        return self.escalate_strategic(challenge_id, reason)
 
     def mark_solved(self, challenge_id: Any, flag: str) -> Dict[str, Any]:
         """
