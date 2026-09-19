@@ -3,6 +3,8 @@ from typing import Any, Dict, List, Optional, Set
 import re
 import os
 
+from pydantic import BaseModel, Field
+
 from ..models import ExecutionAction
 from .artifacts import ArtifactResolver, ArtifactResolutionError
 
@@ -42,6 +44,40 @@ FORBIDDEN_SHELL_CHARS = {";", "&", "|", "`", "$", "\n", "\r"}
 MIN_ACTION_TIMEOUT = 1
 MAX_ACTION_TIMEOUT = 300
 DEFAULT_ACTION_TIMEOUT = 60
+
+
+class ExecutionCapabilities(BaseModel):
+    supported_action_kinds: List[str] = Field(default_factory=lambda: sorted(list(SUPPORTED_ACTION_KINDS)))
+    allowed_analysis_tools: List[str] = Field(default_factory=lambda: sorted(list(ALLOWED_ANALYSIS_TOOLS)))
+    available_analysis_tools: List[str] = Field(default_factory=list)
+    network_enabled: bool = False
+    container_available: bool = False
+    sage_available: bool = False
+
+    @classmethod
+    def detect(cls, network_enabled: bool = False) -> "ExecutionCapabilities":
+        import shutil
+        available_tools = [t for t in sorted(ALLOWED_ANALYSIS_TOOLS) if shutil.which(t) is not None]
+        container_ok = shutil.which("docker") is not None or shutil.which("podman") is not None
+        sage_ok = shutil.which("sage") is not None
+        return cls(
+            available_analysis_tools=available_tools,
+            network_enabled=network_enabled,
+            container_available=container_ok,
+            sage_available=sage_ok,
+        )
+
+    def describe_for_advisor(self) -> str:
+        lines = [
+            f"Supported action kinds: {', '.join(self.supported_action_kinds)}",
+            f"Allowed analysis tools: {', '.join(self.allowed_analysis_tools)}",
+            f"Currently available tools: {', '.join(self.available_analysis_tools) if self.available_analysis_tools else 'basic core utils'}",
+            f"Container execution available: {self.container_available}",
+            f"SageMath available: {self.sage_available}",
+            f"Network access: {'enabled' if self.network_enabled else 'disabled (air-gapped)'}",
+        ]
+        return "\n".join(lines)
+
 
 
 class ActionPolicy:

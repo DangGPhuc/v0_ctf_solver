@@ -35,25 +35,24 @@ V5: Scaled Autonomy: Đa tác tử song song với ngân sách tài nguyên (End
 ```
 
 ### Chi tiết các giai đoạn:
-1. **Phase 1: Architecture Cleanup** *(Hoàn thành)*:
-   - Khai tử workspace 4 tầng tĩnh tải trước toàn bộ bài thi.
-   - Chuyển sang cơ chế nạp bài lười (Lazy Materialization) trong `.runtime/`.
-2. **Phase 2: Core / Knowledge Separation** *(Hoàn thành)*:
-   - Tách rời bộ não `v0_ctf_knowledge` khỏi engine `v0_ctf_solver`.
-   - Giảm kích thước core từ > 10 MB xuống 1.9 MB; `.agents/skills` giảm từ 4.7 MB xuống 58 KB.
-3. **Phase 3: Merge-Gate Hardening** *(Hoàn thành & Verified)*:
-   - **Cách ly tuyệt đối**: `ContainerExecutor` chạy `--cap-drop=ALL`, `--network=none`, không bao giờ âm thầm chạy lại mã độc hại trên host.
-   - **Typed Actions**: Cấm model chạy shell tự do; chỉ thực thi các `ExecutionAction` có cấu trúc.
-   - **GitHub REST Contents API**: Truy cập repository private bằng xác thực `Bearer` và media `vnd.github.raw+json`.
-   - **CI Xanh 100%**: Matrix Python 3.10, 3.12, 3.13 trên GitHub Actions.
-4. **Phase 4: Solver Intelligence** *(Mục tiêu trọng tâm tiếp theo)*:
-   - Chuyển trọng tâm từ "sửa đường ống" sang "nâng cao trí tuệ giải bài".
-   - Chuẩn hóa: `Triage -> Deep Fingerprint -> Retrieval -> Hypothesis -> Experiment -> Evidence`.
-5. **Phase 5: Adaptive Learning**:
-   - Tối ưu hóa bộ lập lịch theo Kỳ Vọng Giá Trị (Expected Value).
-   - Tự động gộp và tăng cường thẻ kỹ thuật thay vì tạo trùng lặp.
-6. **Phase 6: Scaled Parallel Autonomy**:
-   - Đa luồng giải bài song song với kiểm soát rate limit và chi phí token.
+1. **Phase 1: Evidence Evaluation Loop** *(Hoàn thành)*:
+   - Chuẩn hóa vòng lặp suy luận: `Hypothesis -> Canonical Experiment -> ExecutionAction[] -> ExecutionResult -> Deterministic EvidenceEvaluator -> Hypothesis Update`.
+   - Bảo toàn các bất biến: Lỗi thực thi/timeout luôn là `INCONCLUSIVE`, không bao giờ là bằng chứng bác bỏ giả thuyết; thiếu text trong output bị cắt ngắn không dẫn đến `REJECTED`.
+2. **Phase 2: Experiment Candidate Generation & Selection** *(Hoàn thành - V3 Phase 2)*:
+   - Phân tách `ExperimentCandidate` (đề xuất từ Advisor, tối đa 2-3 ứng viên, không sở hữu mã EXP) và `Experiment` (bản ghi chuẩn tắc do hệ thống sở hữu).
+   - `ExperimentPlanner`: Bộ chọn thực nghiệm tất định theo thứ tự từ điển (Khả thi -> Trạng thái giả thuyết -> Ngăn chặn thử lại vô ích -> Bằng chứng mới -> Phân biệt giả thuyết -> Chi phí thấp làm tiêu chí phụ).
+   - `SolverProgressTracker`: Theo dõi bằng chứng mới tất định và phát hiện bế tắc (Stagnation) khi N vòng không sinh bằng chứng mới.
+   - **Đóng chốt các bất biến sản xuất (Production Invariants Hardening)**:
+     - Atomic concurrency-safe canonical experiment allocation (`.advisor/.experiments.lock`).
+     - Idempotent / atomic flag submission reservation (`.submitted_flags.lock` + `pending` state) chống submit trùng.
+     - Bounded I/O: Giới hạn dung lượng tải về và stream capture (`MAX_STDOUT_BYTES`, `MAX_ATTACHMENT_BYTES`) với cờ `stdout_truncated`.
+     - Chống tiêm mã (Injection-safe metadata): Toàn bộ thông tin bài thi (tên bài, host, port, metadata) được tuần tự hóa an toàn qua `json.dumps()` / schema structured JSON.
+3. **Future Phase: Adaptive Scheduling / Tournament ROI / P(solve)** *(Chưa triển khai - Đang quy hoạch)*:
+   - Đánh giá khả năng giải bài theo xác suất $P(\text{solve})$ và tỷ lệ hoàn vốn điểm số (Expected Value / ROI) cho toàn giải đấu.
+4. **Future Phase: Autonomous Knowledge Distillation** *(Chưa triển khai)*:
+   - Học hỏi từ thất bại & tổng hợp Thẻ Tri Thức tự động đẩy PR lên `v0_ctf_knowledge`.
+5. **Future Phase: Parallel Multi-Worker Coordination** *(Chưa triển khai)*:
+   - Phối hợp nhiều solver workers giải nhiều bài đồng thời có kiểm soát xung đột tài nguyên.
 
 ---
 

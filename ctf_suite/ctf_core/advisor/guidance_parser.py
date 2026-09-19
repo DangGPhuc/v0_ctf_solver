@@ -2,7 +2,15 @@ import json
 import re
 from typing import List, Optional
 
-from ..models import Action, AdvisorGuidance, ExecutionAction, Experiment, ExperimentProposal, Hypothesis
+from ..models import (
+    Action,
+    AdvisorGuidance,
+    ExecutionAction,
+    Experiment,
+    ExperimentCandidate,
+    ExperimentProposal,
+    Hypothesis,
+)
 
 
 class GuidanceParser:
@@ -27,10 +35,21 @@ class GuidanceParser:
                 if isinstance(data, dict):
                     data["raw_text"] = text
 
-                    proposal: Optional[ExperimentProposal] = None
+                    candidates: List[ExperimentCandidate] = []
 
-                    # A. Structured 'experiment' object (Section 4 & 6)
-                    if "experiment" in data and isinstance(data["experiment"], dict):
+                    # A. Structured 'experiment_candidates' list (Section 4 & 5)
+                    if "experiment_candidates" in data and isinstance(data["experiment_candidates"], list):
+                        for raw_c in data["experiment_candidates"][:3]:  # bounded max 2-3
+                            if isinstance(raw_c, dict):
+                                c_dict = dict(raw_c)
+                                c_dict.pop("experiment_id", None)
+                                c_dict.pop("id", None)
+                                c_dict.pop("outcome", None)
+                                c_dict.pop("actual_evidence", None)
+                                candidates.append(ExperimentCandidate.model_validate(c_dict))
+
+                    # B. Structured single 'experiment' object (Section 4 & 6)
+                    elif "experiment" in data and isinstance(data["experiment"], dict):
                         exp_raw = dict(data["experiment"])
                         # Advisor does NOT own experiment_id or outcome
                         exp_raw.pop("experiment_id", None)
@@ -52,18 +71,18 @@ class GuidanceParser:
                             contra = [contra] if contra else []
                         exp_raw["contradicting_evidence"] = contra
 
-                        proposal = ExperimentProposal.model_validate(exp_raw)
+                        candidates.append(ExperimentCandidate.model_validate(exp_raw))
 
-                    # B. Legacy 'experiments' list
+                    # C. Legacy 'experiments' list
                     elif "experiments" in data and isinstance(data["experiments"], list) and data["experiments"]:
                         first_exp = dict(data["experiments"][0])
                         first_exp.pop("experiment_id", None)
                         first_exp.pop("id", None)
                         first_exp.pop("outcome", None)
                         first_exp.pop("actual_evidence", None)
-                        proposal = ExperimentProposal.model_validate(first_exp)
+                        candidates.append(ExperimentCandidate.model_validate(first_exp))
 
-                    # C. Backward compatibility: legacy execution_plan without experiment block
+                    # D. Backward compatibility: legacy execution_plan without experiment block
                     elif data.get("execution_plan"):
                         # Target first declared hypothesis if available
                         hypo_id = "H1"
@@ -82,21 +101,30 @@ class GuidanceParser:
                         if isinstance(contra, str):
                             contra = [contra] if contra else []
 
-                        proposal = ExperimentProposal(
+                        candidates.append(ExperimentCandidate(
                             hypothesis_id=hypo_id,
                             intent=data.get("intent", data.get("assessment", "Execute solver action")),
                             execution_plan=[ExecutionAction.model_validate(a) for a in data["execution_plan"]],
                             expected_evidence=expected,
                             contradicting_evidence=contra,
-                        )
+                        ))
 
-                    if proposal:
+                    if candidates:
+                        data["experiment_candidates"] = [c.model_dump() for c in candidates]
+                        first_cand = candidates[0]
+                        proposal = ExperimentProposal(
+                            hypothesis_id=first_cand.hypothesis_id,
+                            intent=first_cand.intent,
+                            execution_plan=first_cand.execution_plan,
+                            expected_evidence=first_cand.expected_evidence,
+                            contradicting_evidence=first_cand.contradicting_evidence,
+                        )
                         data["experiment"] = proposal.model_dump()
                         if not data.get("execution_plan") and proposal.execution_plan:
                             data["execution_plan"] = [a.model_dump() for a in proposal.execution_plan]
                         if not data.get("experiments"):
                             data["experiments"] = [{
-                                "experiment_id": "EXP-pending",
+                                "experiment_id": "candidate",
                                 "hypothesis_id": proposal.hypothesis_id,
                                 "intent": proposal.intent,
                                 "execution_plan": [a.model_dump() for a in proposal.execution_plan],

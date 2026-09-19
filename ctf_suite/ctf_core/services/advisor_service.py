@@ -46,9 +46,14 @@ from ..experiments import (
     ExperimentEvaluation,
     Experiment,
     ExperimentProposal,
+    ExperimentCandidate,
+    ExperimentPlanner,
+    SolverProgressTracker,
+    compute_experiment_signature,
     UnknownExperimentError,
     UnknownHypothesisError,
 )
+from ..execution.policy import ExecutionCapabilities
 
 console = Console()
 
@@ -320,18 +325,62 @@ class AdvisorService:
         """
         Creates a system-owned canonical experiment in ExperimentLedger from an Advisor proposal.
         The Advisor must NOT own or choose the canonical experiment ID.
+        Uses ExperimentPlanner to evaluate and select the best candidate.
         """
         ledger = ExperimentLedger(advisor_dir)
+        progress_tracker = SolverProgressTracker(advisor_dir)
+        hypo_mgr = HypothesisManager.load(advisor_dir / "hypotheses.json")
         canonical_exp = None
-        if guidance.experiment and guidance.experiment.execution_plan:
-            canonical_exp = ledger.create(
+
+        candidates = list(guidance.experiment_candidates)
+        if not candidates and guidance.experiment and guidance.experiment.execution_plan:
+            candidates = [ExperimentCandidate(
                 hypothesis_id=guidance.experiment.hypothesis_id,
                 intent=guidance.experiment.intent,
-                actions=guidance.experiment.execution_plan,
+                execution_plan=guidance.experiment.execution_plan,
                 expected_evidence=guidance.experiment.expected_evidence,
                 contradicting_evidence=guidance.experiment.contradicting_evidence,
+            )]
+
+        if candidates:
+            planner = ExperimentPlanner(capabilities=ExecutionCapabilities.detect())
+            sel_res = planner.select_candidate(
+                candidates=candidates,
+                hypothesis_manager=hypo_mgr,
+                ledger=ledger,
+                progress_tracker=progress_tracker,
             )
-            state["active_experiment_id"] = canonical_exp.experiment_id
+            state["planner_selection_reason"] = sel_res.reason
+            state["planner_stagnation_detected"] = sel_res.stagnation_detected
+            if sel_res.stagnation_detected:
+                state["pivot_required"] = True
+
+            if sel_res.selected:
+                cand = sel_res.selected
+                canonical_exp = ledger.create(
+                    hypothesis_id=cand.hypothesis_id,
+                    intent=cand.intent,
+                    actions=cand.execution_plan,
+                    expected_evidence=cand.expected_evidence,
+                    contradicting_evidence=cand.contradicting_evidence,
+                )
+                state["active_experiment_id"] = canonical_exp.experiment_id
+                progress_tracker.record_experiment_attempt(compute_experiment_signature(canonical_exp))
+                # CRITICAL CAUSAL INVARIANT: Synchronize guidance to canonical experiment's actions
+                guidance.execution_plan = list(canonical_exp.actions_to_run)
+                guidance.experiment = ExperimentProposal(
+                    hypothesis_id=canonical_exp.hypothesis_id,
+                    intent=canonical_exp.intent,
+                    execution_plan=canonical_exp.actions_to_run,
+                    expected_evidence=canonical_exp.expected_evidence,
+                    contradicting_evidence=canonical_exp.contradicting_evidence,
+                )
+                guidance.experiments = [canonical_exp]
+            else:
+                state["active_experiment_id"] = None
+                guidance.execution_plan = []
+                guidance.experiment = None
+                guidance.experiments = []
         elif guidance.execution_plan:
             hypo_id = guidance.hypotheses[0].id if guidance.hypotheses else (state.get("active_hypothesis_id") or "H1")
             canonical_exp = ledger.create(
@@ -341,6 +390,7 @@ class AdvisorService:
                 expected_evidence=guidance.requested_evidence,
             )
             state["active_experiment_id"] = canonical_exp.experiment_id
+            progress_tracker.record_experiment_attempt(compute_experiment_signature(canonical_exp))
         else:
             state["active_experiment_id"] = None
 
@@ -726,7 +776,19 @@ class AdvisorService:
                     f"[yellow]Khuyến nghị: Chạy `./ctf advisor escalate {challenge_id}` để kích hoạt Strategic Assumption Challenge & Reframe![/yellow]"
                 )
 
-        # 4. Tạo Execution Report theo template
+        # 4. Cập nhật SolverProgressTracker (Factual Progress & Stagnation Detection)
+        progress_tracker = SolverProgressTracker(advisor_dir)
+        ev_items = (exec_res.evidence or []) + evaluation.supporting_evidence + evaluation.contradicting_evidence
+        new_evidence = progress_tracker.record_evidence(ev_items)
+        if updated_hypo and updated_hypo.status in ["confirmed", "rejected"]:
+            progress_tracker.record_hypothesis_transition()
+        if pivot_needed:
+            progress_tracker.record_pivot()
+        if progress_tracker.is_stagnated(3):
+            state["stagnation_detected"] = True
+            state["pivot_required"] = True
+
+        # 5. Tạo Execution Report theo template
         report_text = self._format_execution_report(
             chall_name=state.get("challenge_name", "Chall"),
             chall_id=str(challenge_id),

@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 import subprocess
@@ -22,6 +23,8 @@ class ExecutionRunner:
       - ActionPolicy rejects an action,
       - or a stop condition / flag is satisfied.
     """
+    MAX_STDOUT_BYTES: int = 512 * 1024  # 512 KB
+    MAX_STDERR_BYTES: int = 512 * 1024  # 512 KB
 
     @classmethod
     def _build_trusted_fallback_actions(
@@ -63,22 +66,32 @@ class ExecutionRunner:
         work_dir: Path,
         default_timeout: int = 60,
         allow_trusted_fallback: bool = False,
+        challenge_context: Optional[Dict[str, Any]] = None,
     ) -> List[ExecutionAction]:
         """
-        Extracts execution plan from guidance or falls back to standard solver files ONLY
-        when explicitly authorized via allow_trusted_fallback=True.
-
-        Trust boundary invariants:
-        1. If guidance is present:
-           - Malformed structured JSON (validation_error) fails closed: return [].
-           - Prose guidance (unstructured next_actions or raw text) without an execution_plan: return [].
-           - Empty AdvisorGuidance() without an execution_plan: return [].
-           - Valid structured execution_plan: return list(execution_plan).
-           - Guidance NEVER enters trusted fallback, regardless of allow_trusted_fallback.
-        2. If guidance is None:
-           - allow_trusted_fallback=False: return [].
-           - allow_trusted_fallback=True: return _build_trusted_fallback_actions(...).
+        Extracts authoritative execution plan:
+        1. Canonical Experiment (from challenge_context or ExperimentLedger) is the primary authority.
+        2. Fallback to guidance.execution_plan if no canonical experiment is associated.
+        3. Fallback to standard solver files ONLY when explicitly authorized via allow_trusted_fallback=True.
         """
+        if challenge_context:
+            if challenge_context.get("canonical_experiment") and hasattr(challenge_context["canonical_experiment"], "actions_to_run"):
+                return list(challenge_context["canonical_experiment"].actions_to_run)
+            if challenge_context.get("actions"):
+                return list(challenge_context["actions"])
+            exp_id = challenge_context.get("experiment_id")
+            if exp_id:
+                try:
+                    from ..experiments.ledger import ExperimentLedger
+                    adv_dir = (work_dir.parent / ".advisor") if (work_dir.parent / ".advisor").is_dir() else (work_dir / ".advisor")
+                    if adv_dir.is_dir() and (adv_dir / "experiments.jsonl").exists():
+                        ledger = ExperimentLedger(adv_dir)
+                        canonical_exp = ledger.get(exp_id)
+                        if canonical_exp and canonical_exp.actions_to_run:
+                            return list(canonical_exp.actions_to_run)
+                except Exception:
+                    pass
+
         if guidance is not None:
             if getattr(guidance, "validation_error", None):
                 return []
@@ -121,6 +134,7 @@ class ExecutionRunner:
             work_dir=work_dir,
             default_timeout=default_timeout,
             allow_trusted_fallback=allow_trusted_fallback,
+            challenge_context=challenge_context,
         )
 
         if not actions_to_run:
@@ -164,6 +178,10 @@ class ExecutionRunner:
         actions_performed: List[str] = []
         stdout_acc: List[str] = []
         stderr_acc: List[str] = []
+        matched_evidence_acc: List[str] = []
+        flag_candidates_acc: List[str] = []
+        any_stdout_truncated = False
+        any_stderr_truncated = False
         final_return_code: Optional[int] = None
         timed_out = False
         error_msg: Optional[str] = None
@@ -193,6 +211,19 @@ class ExecutionRunner:
                 if stderr_piece:
                     stderr_acc.append(stderr_piece)
 
+                if res.get("stdout_truncated"):
+                    any_stdout_truncated = True
+                if res.get("stderr_truncated"):
+                    any_stderr_truncated = True
+
+                for ev in res.get("matched_evidence", []):
+                    if ev not in matched_evidence_acc:
+                        matched_evidence_acc.append(ev)
+
+                for fc in res.get("flag_candidates", []):
+                    if fc not in flag_candidates_acc:
+                        flag_candidates_acc.append(fc)
+
                 final_return_code = ret_code
                 if res.get("timed_out"):
                     timed_out = True
@@ -216,8 +247,21 @@ class ExecutionRunner:
                 stderr_acc.append(str(e))
                 break
 
+        max_stdout = int(os.environ.get("MAX_STDOUT_BYTES", cls.MAX_STDOUT_BYTES))
+        max_stderr = int(os.environ.get("MAX_STDERR_BYTES", cls.MAX_STDERR_BYTES))
+
         full_stdout = "\n".join(stdout_acc)
         full_stderr = "\n".join(stderr_acc)
+
+        if len(full_stdout) > max_stdout:
+            any_stdout_truncated = True
+            full_stdout = full_stdout[:max_stdout]
+
+        if len(full_stderr) > max_stderr:
+            any_stderr_truncated = True
+            full_stderr = full_stderr[:max_stderr]
+
+        output_complete = not (any_stdout_truncated or any_stderr_truncated or timed_out)
 
         return ExecutionResultEvaluator.build_result(
             experiment_id=experiment_id,
@@ -230,4 +274,9 @@ class ExecutionRunner:
             flag_format_regex=flag_format_regex,
             timed_out=timed_out,
             error_message=error_msg,
+            stdout_truncated=any_stdout_truncated,
+            stderr_truncated=any_stderr_truncated,
+            output_complete=output_complete,
+            matched_evidence=matched_evidence_acc,
+            extra_flag_candidates=flag_candidates_acc,
         )

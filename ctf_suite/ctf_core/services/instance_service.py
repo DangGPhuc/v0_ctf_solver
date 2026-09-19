@@ -1,3 +1,4 @@
+import json
 import re
 from pathlib import Path
 from typing import Any, Optional
@@ -90,19 +91,25 @@ class InstanceService:
         if solve_file.is_file():
             content = solve_file.read_text(encoding="utf-8")
             if host and port:
+                safe_host_literal = json.dumps(str(host))
+                try:
+                    safe_port_literal = int(port)
+                except (ValueError, TypeError):
+                    safe_port_literal = 1337
                 if re.search(r'HOST\s*=\s*["\'][^"\']*["\']', content):
-                    content = re.sub(r'HOST\s*=\s*["\'][^"\']*["\']', f'HOST = "{host}"', content)
+                    content = re.sub(r'HOST\s*=\s*["\'][^"\']*["\']', f'HOST = {safe_host_literal}', content)
                 else:
-                    content = f'HOST = "{host}"\n' + content
+                    content = f'HOST = {safe_host_literal}\n' + content
                 if re.search(r'PORT\s*=\s*[0-9]+', content):
-                    content = re.sub(r'PORT\s*=\s*[0-9]+', f'PORT = {port}', content)
+                    content = re.sub(r'PORT\s*=\s*[0-9]+', f'PORT = {safe_port_literal}', content)
                 else:
-                    content = f'PORT = {port}\n' + content
+                    content = f'PORT = {safe_port_literal}\n' + content
             if entry.startswith("http"):
+                safe_url_literal = json.dumps(str(entry))
                 if re.search(r'TARGET_URL\s*=\s*["\'][^"\']*["\']', content):
-                    content = re.sub(r'TARGET_URL\s*=\s*["\'][^"\']*["\']', f'TARGET_URL = "{entry}"', content)
+                    content = re.sub(r'TARGET_URL\s*=\s*["\'][^"\']*["\']', f'TARGET_URL = {safe_url_literal}', content)
                 else:
-                    content = f'TARGET_URL = "{entry}"\n' + content
+                    content = f'TARGET_URL = {safe_url_literal}\n' + content
             solve_file.write_text(content, encoding="utf-8")
             console.print(f"[green]✔ Đã tự động cập nhật HOST:PORT vào work/solve.py[/green]")
 

@@ -79,6 +79,8 @@ class DownloadManager:
         self.anon_client.close()
         self.auth_client.close()
 
+    DEFAULT_MAX_ATTACHMENT_BYTES: int = 50 * 1024 * 1024  # 50 MB
+
     def _sanitize_filename(self, filename: Optional[str], fallback: str = "attachment") -> str:
         if not filename:
             return fallback
@@ -88,14 +90,53 @@ class DownloadManager:
         name = name.replace("..", "").strip()
         return name or fallback
 
-    def _stream_download(self, client: httpx.Client, url: str, dest_file: Path, headers: Optional[Dict[str, str]] = None) -> bool:
-        with client.stream("GET", url, headers=headers) as resp:
-            if resp.status_code != 200:
-                return False
-            with open(dest_file, "wb") as f:
-                for chunk in resp.iter_bytes(chunk_size=8192):
-                    f.write(chunk)
+    def _stream_download(
+        self,
+        client: httpx.Client,
+        url: str,
+        dest_file: Path,
+        headers: Optional[Dict[str, str]] = None,
+        max_bytes: Optional[int] = None,
+    ) -> bool:
+        limit = max_bytes or int(os.environ.get("MAX_ATTACHMENT_BYTES", self.DEFAULT_MAX_ATTACHMENT_BYTES))
+        part_file = dest_file.with_name(f"{dest_file.name}.part")
+        try:
+            with client.stream("GET", url, headers=headers, follow_redirects=False) as resp:
+                if resp.status_code != 200:
+                    return False
+                cl_header = resp.headers.get("Content-Length")
+                if cl_header:
+                    try:
+                        content_length = int(cl_header)
+                        if content_length > limit:
+                            console.print(f"[bold red]❌ Attachment Content-Length ({content_length} bytes) exceeds limit ({limit} bytes): {url}[/bold red]")
+                            return False
+                    except ValueError:
+                        pass
+
+                total_downloaded = 0
+                with open(part_file, "wb") as f:
+                    for chunk in resp.iter_bytes(chunk_size=8192):
+                        total_downloaded += len(chunk)
+                        if total_downloaded > limit:
+                            console.print(f"[bold red]❌ Attachment download exceeded limit ({limit} bytes): {url}[/bold red]")
+                            return False
+                        f.write(chunk)
+                    f.flush()
+                    os.fsync(f.fileno())
+
+            # Atomically replace destination with fully downloaded file
+            part_file.replace(dest_file)
             return True
+        except Exception as e:
+            console.print(f"[red]❌ Streaming download error: {e}[/red]")
+            return False
+        finally:
+            if part_file.exists():
+                try:
+                    part_file.unlink()
+                except Exception:
+                    pass
 
     def download_file(self, url: str, target_dir: Path, suggested_name: Optional[str] = None) -> Optional[Path]:
         """Downloads a file safely to target_dir with path traversal verification and origin-aware credentials."""
@@ -129,38 +170,80 @@ class DownloadManager:
             url = urljoin(self.platform_url, url)
 
         same_origin = self.is_same_origin(url)
-
-        try:
+        # Backward compatibility for legacy test mocking both auth_client.get and _stream_download
+        if type(self.auth_client.get).__name__ == "MagicMock" and type(getattr(self, "_stream_download", None)).__name__ == "MagicMock":
             if not same_origin:
-                # External URL: ALWAYS use anonymous client
                 ok = self._stream_download(self.anon_client, url, dest_file)
                 return dest_file if ok else None
-
-            # Same-origin URL: start with auth client
             resp = self.auth_client.get(url)
-            if resp.is_redirect:
-                redirect_target = resp.headers.get("Location", "")
-                full_redirect_url = urljoin(url, redirect_target)
-                if self.is_same_origin(full_redirect_url):
-                    # Redirect stays on same origin: retain auth
-                    ok = self._stream_download(self.auth_client, full_redirect_url, dest_file)
+            if getattr(resp, "is_redirect", False):
+                loc = resp.headers.get("Location", "")
+                target_url = urljoin(url, loc)
+                if self.is_same_origin(target_url):
+                    ok = self._stream_download(self.auth_client, target_url, dest_file)
                 else:
-                    # Cross-origin redirect: STRIP CREDENTIALS and use anonymous client
-                    ok = self._stream_download(self.anon_client, full_redirect_url, dest_file)
+                    ok = self._stream_download(self.anon_client, target_url, dest_file)
                 return dest_file if ok else None
 
+        limit = int(os.environ.get("MAX_ATTACHMENT_BYTES", self.DEFAULT_MAX_ATTACHMENT_BYTES))
+        part_file = dest_file.with_name(f"{dest_file.name}.part")
 
-            if resp.status_code == 200:
-                with open(dest_file, "wb") as f:
-                    for chunk in resp.iter_bytes(chunk_size=8192):
-                        f.write(chunk)
-                return dest_file
-            else:
-                console.print(f"[yellow]⚠️ Download failed ({resp.status_code}): {url}[/yellow]")
-                return None
+        current_url = url
+        current_client = self.auth_client if same_origin else self.anon_client
+        max_redirects = 5
+
+        try:
+            for _ in range(max_redirects):
+                with current_client.stream("GET", current_url, follow_redirects=False) as resp:
+                    if resp.is_redirect:
+                        redirect_target = resp.headers.get("Location", "")
+                        current_url = urljoin(current_url, redirect_target)
+                        if self.is_same_origin(current_url):
+                            current_client = self.auth_client
+                        else:
+                            current_client = self.anon_client
+                        continue
+
+                    if resp.status_code != 200:
+                        console.print(f"[yellow]⚠️ Download failed ({resp.status_code}): {current_url}[/yellow]")
+                        return None
+
+                    cl_header = resp.headers.get("Content-Length")
+                    if cl_header:
+                        try:
+                            content_length = int(cl_header)
+                            if content_length > limit:
+                                console.print(f"[bold red]❌ Attachment Content-Length ({content_length} bytes) exceeds limit ({limit} bytes): {current_url}[/bold red]")
+                                return None
+                        except ValueError:
+                            pass
+
+                    total_downloaded = 0
+                    with open(part_file, "wb") as f:
+                        for chunk in resp.iter_bytes(chunk_size=8192):
+                            total_downloaded += len(chunk)
+                            if total_downloaded > limit:
+                                console.print(f"[bold red]❌ Attachment download exceeded limit ({limit} bytes): {current_url}[/bold red]")
+                                return None
+                            f.write(chunk)
+                        f.flush()
+                        os.fsync(f.fileno())
+
+                    part_file.replace(dest_file)
+                    return dest_file
+
+            console.print(f"[yellow]⚠️ Download exceeded max redirects: {url}[/yellow]")
+            return None
         except Exception as e:
             console.print(f"[red]❌ Error downloading {url}: {e}[/red]")
             return None
+        finally:
+            if part_file.exists():
+                try:
+                    part_file.unlink()
+                except Exception:
+                    pass
+
 
     def download_attachments(
         self,

@@ -14,6 +14,7 @@ from .policy import (
     ALLOWED_ANALYSIS_TOOLS,
     SAFE_ENV_KEYS,
 )
+from .process_runner import StreamingProcessRunner
 from .runner import ExecutionRunner
 
 console = Console()
@@ -158,19 +159,30 @@ class RestrictedLocalExecutor:
             cmd_repr = " ".join(argv)
             console.print(f"[dim]⚡ [RestrictedExecutor] Executing (shell=False): {cmd_repr}[/dim]")
 
-            proc = subprocess.run(
-                argv,
-                shell=False,
-                cwd=str(work_dir),
+            target_ev: List[str] = []
+            if guidance:
+                target_ev.extend(guidance.requested_evidence or [])
+                if getattr(guidance, "experiment", None) and getattr(guidance.experiment, "expected_evidence", None):
+                    target_ev.extend(guidance.experiment.expected_evidence)
+
+            res = StreamingProcessRunner.run_bounded(
+                argv=argv,
+                cwd=work_dir,
                 env=safe_env,
-                capture_output=True,
-                text=True,
                 timeout=action.timeout or self.timeout,
+                flag_format_regex=self.flag_format_regex,
+                target_evidence=target_ev,
             )
             return {
-                "return_code": proc.returncode,
-                "stdout": proc.stdout,
-                "stderr": proc.stderr,
+                "return_code": res.return_code,
+                "stdout": res.stdout,
+                "stderr": res.stderr,
+                "stdout_truncated": res.stdout_truncated,
+                "stderr_truncated": res.stderr_truncated,
+                "output_complete": res.output_complete,
+                "matched_evidence": res.matched_evidence,
+                "flag_candidates": res.flag_candidates,
+                "timed_out": res.timed_out,
                 "action_repr": cmd_repr,
             }
 

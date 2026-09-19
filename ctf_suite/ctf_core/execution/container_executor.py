@@ -2,7 +2,8 @@ import os
 import shutil
 import subprocess
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
+import uuid
 from rich.console import Console
 
 from ..models import AdvisorGuidance, ExecutionAction, ExecutionResult
@@ -14,6 +15,7 @@ from .policy import (
     ExecutionPolicyError,
     SAFE_ENV_KEYS,
 )
+from .process_runner import StreamingProcessRunner
 from .runner import ExecutionRunner
 
 console = Console()
@@ -205,22 +207,39 @@ class ContainerExecutor:
                 if k not in SAFE_ENV_KEYS:
                     cmd.extend(["-e", f"{k}={v}"])
 
+            container_name = f"ctf-sandbox-{uuid.uuid4().hex[:12]}"
+            cmd.extend(["--name", container_name])
             cmd.extend([selected_image, *sub_cmd])
 
             action_repr = f"{self.engine}:{ ' '.join(sub_cmd) }"
             console.print(f"[cyan]🐳 [ContainerExecutor] Running action in {self.engine} (timeout={action.timeout}s): { ' '.join(sub_cmd) }[/cyan]")
 
-            proc = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
+            target_ev: List[str] = []
+            if guidance:
+                target_ev.extend(guidance.requested_evidence or [])
+                if getattr(guidance, "experiment", None) and getattr(guidance.experiment, "expected_evidence", None):
+                    target_ev.extend(guidance.experiment.expected_evidence)
+
+            res = StreamingProcessRunner.run_bounded(
+                argv=cmd,
+                cwd=work_dir,
+                env=os.environ.copy(),
                 timeout=action.timeout or 60,
+                flag_format_regex=self.flag_format_regex,
+                target_evidence=target_ev,
+                cleanup_container_name=container_name,
             )
 
             return {
-                "return_code": proc.returncode,
-                "stdout": proc.stdout,
-                "stderr": proc.stderr,
+                "return_code": res.return_code,
+                "stdout": res.stdout,
+                "stderr": res.stderr,
+                "stdout_truncated": res.stdout_truncated,
+                "stderr_truncated": res.stderr_truncated,
+                "output_complete": res.output_complete,
+                "matched_evidence": res.matched_evidence,
+                "flag_candidates": res.flag_candidates,
+                "timed_out": res.timed_out,
                 "action_repr": action_repr,
             }
 
