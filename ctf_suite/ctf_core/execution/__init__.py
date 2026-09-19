@@ -43,6 +43,10 @@ def get_executor(
             allow_local_fallback=allow_local_fallback,
         )
 
+from .policy import ActionPolicy, ExecutionPolicyError, ALLOWED_ANALYSIS_TOOLS
+from .runner import ExecutionRunner
+from .artifacts import ArtifactResolver, ArtifactResolutionError
+
 __all__ = [
     "ExecutorAdapter",
     "ExecutionResultEvaluator",
@@ -50,4 +54,10 @@ __all__ = [
     "ContainerExecutor",
     "UnsafeLocalExecutor",
     "get_executor",
+    "ActionPolicy",
+    "ExecutionPolicyError",
+    "ExecutionRunner",
+    "ArtifactResolver",
+    "ArtifactResolutionError",
+    "ALLOWED_ANALYSIS_TOOLS",
 ]

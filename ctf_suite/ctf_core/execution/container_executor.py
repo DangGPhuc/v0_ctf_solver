@@ -9,6 +9,12 @@ from ..models import AdvisorGuidance, ExecutionAction, ExecutionResult
 from .evaluator import ExecutionResultEvaluator
 from .restricted_executor import RestrictedLocalExecutor
 from .artifacts import ArtifactResolver, ArtifactResolutionError
+from .policy import (
+    ActionPolicy,
+    ExecutionPolicyError,
+    SAFE_ENV_KEYS,
+)
+from .runner import ExecutionRunner
 
 console = Console()
 
@@ -21,6 +27,7 @@ DEFAULT_CATEGORY_IMAGES = {
     "rev": "python:3.11-slim",
     "forensics": "python:3.11-slim",
 }
+
 
 class ContainerExecutor:
     """
@@ -41,6 +48,9 @@ class ContainerExecutor:
       - Closed Execution:
           Output is captured and parsed directly. NEVER silently re-executes on host
           unless explicitly permitted via allow_local_fallback=True.
+      - Multi-Action Execution:
+          Executes multi-action plans sequentially (action 1 -> action 2 -> action 3)
+          with per-action timeouts and unified ActionPolicy validation.
     """
 
     def __init__(
@@ -61,7 +71,6 @@ class ContainerExecutor:
         self.allow_local_fallback = allow_local_fallback
         self.fallback = RestrictedLocalExecutor(flag_format_regex=self.flag_format_regex)
         self.engine = self._detect_engine()
-
 
     def _detect_engine(self) -> Optional[str]:
         for eng in ["docker", "podman"]:
@@ -115,130 +124,107 @@ class ContainerExecutor:
         else:
             net_mode = "none"
 
-        # 3. Build container execution command
-        cmd = [
-            self.engine, "run", "--rm",
-            "--cpus=1", "--memory=512m",
-            "--cap-drop=ALL",
-            "--security-opt=no-new-privileges",
-            f"--network={net_mode}",
-            "-v", f"{work_dir}:/work:rw",
-            "-w", "/work",
-        ]
-
-        if input_dir.is_dir():
-            cmd.extend(["-v", f"{input_dir}:/input:ro"])
-
-        # Strip host environment secrets - only pass safe non-sensitive vars if specified
-        if "env_vars" in challenge_context and isinstance(challenge_context["env_vars"], dict):
-            for k, v in challenge_context["env_vars"].items():
-                if not any(bad in k.upper() for bad in ["TOKEN", "COOKIE", "SECRET", "AUTH", "PASS", "KEY"]):
-                    cmd.extend(["-e", f"{k}={v}"])
-
-        # Select appropriate container image
         cat = (challenge_context.get("category") or "base").lower()
-        selected_image = self.category_images.get(cat, self.image)
+        default_category_image = self.category_images.get(cat, self.image)
 
-        # Determine executable command inside container
-        actions_performed: List[str] = []
-        sub_cmd: List[str] = []
-
-        if guidance.execution_plan:
-            first_action = guidance.execution_plan[0]
-            kind = first_action.kind
+        # 3. Single action execution callback for ExecutionRunner
+        def run_single_container_action(action: ExecutionAction, ctx: Dict[str, Any]) -> Dict[str, Any]:
+            kind = action.kind
+            selected_image = default_category_image
+            sub_cmd: List[str] = []
 
             if kind in ["run_solver", "run_python_file"]:
                 container_script = ArtifactResolver.resolve_container(
-                    first_action.path or "solve.py", input_dir, work_dir
+                    action.path or "solve.py", input_dir, work_dir
                 )
                 sub_cmd = ["python3", container_script]
-                if first_action.argv and len(first_action.argv) > 1:
-                    clean_args = ArtifactResolver.translate_argv(first_action.argv[1:], input_dir, work_dir, in_container=True)
+                if action.argv and len(action.argv) > 1:
+                    clean_args = ArtifactResolver.translate_argv(action.argv[1:], input_dir, work_dir, in_container=True)
                     sub_cmd.extend(clean_args)
-                actions_performed.append(f"{self.engine}:python3 {container_script}")
 
             elif kind == "run_sage_file":
                 selected_image = self.category_images.get("crypto-sage", "sagemath/sagemath:latest")
                 container_script = ArtifactResolver.resolve_container(
-                    first_action.path or "solve.sage", input_dir, work_dir
+                    action.path or "solve.sage", input_dir, work_dir
                 )
                 sub_cmd = ["sage", container_script]
-                if first_action.argv and len(first_action.argv) > 1:
-                    clean_args = ArtifactResolver.translate_argv(first_action.argv[1:], input_dir, work_dir, in_container=True)
+                if action.argv and len(action.argv) > 1:
+                    clean_args = ArtifactResolver.translate_argv(action.argv[1:], input_dir, work_dir, in_container=True)
                     sub_cmd.extend(clean_args)
-                actions_performed.append(f"{self.engine}:sage {container_script}")
 
             elif kind == "run_binary":
-                bin_target = first_action.path or (first_action.argv[0] if first_action.argv else "vuln")
+                bin_target = action.path or (action.argv[0] if action.argv else "vuln")
                 container_bin = ArtifactResolver.resolve_container(bin_target, input_dir, work_dir)
                 sub_cmd = [container_bin]
-                if first_action.argv and len(first_action.argv) > 1:
-                    clean_args = ArtifactResolver.translate_argv(first_action.argv[1:], input_dir, work_dir, in_container=True)
+                if action.argv and len(action.argv) > 1:
+                    clean_args = ArtifactResolver.translate_argv(action.argv[1:], input_dir, work_dir, in_container=True)
                     sub_cmd.extend(clean_args)
-                actions_performed.append(f"{self.engine}:{container_bin}")
 
             elif kind == "read_file":
-                read_target = first_action.path or (first_action.argv[0] if first_action.argv else "flag.txt")
+                read_target = action.path or (action.argv[0] if action.argv else "flag.txt")
                 container_file = ArtifactResolver.resolve_container(read_target, input_dir, work_dir)
                 sub_cmd = ["cat", container_file]
-                actions_performed.append(f"{self.engine}:cat {container_file}")
 
             elif kind == "list_files":
                 sub_cmd = ["ls", "-la"]
-                actions_performed.append(f"{self.engine}:ls -la")
 
             elif kind == "analysis_tool":
-                tool_name = first_action.tool or (first_action.argv[0] if first_action.argv else "checksec")
-                raw_args = first_action.argv[1:] if (first_action.argv and first_action.argv[0] == tool_name) else (first_action.argv or [])
+                tool_name = action.tool or (action.argv[0] if action.argv else "checksec")
+                raw_args = action.argv[1:] if (action.argv and action.argv[0] == tool_name) else (action.argv or [])
                 clean_args = ArtifactResolver.translate_argv(raw_args, input_dir, work_dir, in_container=True)
                 sub_cmd = [tool_name, *clean_args]
-                actions_performed.append(f"{self.engine}:{tool_name}")
 
             else:
                 sub_cmd = ["python3", "solve.py"]
-                actions_performed.append(f"{self.engine}:python3 solve.py")
-        else:
-            solve_sage = work_dir / "solve.sage"
-            solve_script = work_dir / "solve.py"
-            if solve_sage.is_file():
-                selected_image = self.category_images.get("crypto-sage", "sagemath/sagemath:latest")
-                sub_cmd = ["sage", "/work/solve.sage"]
-                actions_performed.append(f"{self.engine}:sage /work/solve.sage")
-            elif solve_script.is_file():
-                sub_cmd = ["python3", "/work/solve.py"]
-                actions_performed.append(f"{self.engine}:python3 /work/solve.py")
-            else:
-                sub_cmd = ["ls", "-la"]
-                actions_performed.append(f"{self.engine}:ls -la")
 
-        cmd.extend([selected_image, *sub_cmd])
+            # Assemble docker/podman command
+            cmd = [
+                self.engine, "run", "--rm",
+                "--cpus=1", "--memory=512m",
+                "--cap-drop=ALL",
+                "--security-opt=no-new-privileges",
+                f"--network={net_mode}",
+                "-v", f"{work_dir}:/work:rw",
+                "-w", "/work",
+            ]
 
+            if input_dir.is_dir():
+                cmd.extend(["-v", f"{input_dir}:/input:ro"])
 
-        console.print(f"[cyan]🐳 [ContainerExecutor] Running isolated execution in {self.engine} (network={net_mode})...[/cyan]")
-        try:
-            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=65)
-            # P0: NEVER rerun on host! Build ExecutionResult directly from container output!
-            return ExecutionResultEvaluator.build_result(
-                experiment_id=experiment_id,
-                return_code=proc.returncode,
-                stdout=proc.stdout,
-                stderr=proc.stderr,
-                actions_performed=actions_performed,
-                work_dir=work_dir,
-                guidance=guidance,
-                flag_format_regex=self.flag_format_regex,
+            # Pass sanitized environment variables (no credentials)
+            safe_env = ActionPolicy.sanitize_environment(ctx.get("env_vars"))
+            for k, v in safe_env.items():
+                if k not in SAFE_ENV_KEYS:
+                    cmd.extend(["-e", f"{k}={v}"])
+
+            cmd.extend([selected_image, *sub_cmd])
+
+            action_repr = f"{self.engine}:{ ' '.join(sub_cmd) }"
+            console.print(f"[cyan]🐳 [ContainerExecutor] Running action in {self.engine} (timeout={action.timeout}s): { ' '.join(sub_cmd) }[/cyan]")
+
+            proc = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=action.timeout or 60,
             )
-        except subprocess.TimeoutExpired:
-            return ExecutionResultEvaluator.build_result(
-                experiment_id=experiment_id,
-                return_code=-9,
-                stdout="",
-                stderr="Container timed out after 65s",
-                actions_performed=actions_performed,
-                work_dir=work_dir,
+
+            return {
+                "return_code": proc.returncode,
+                "stdout": proc.stdout,
+                "stderr": proc.stderr,
+                "action_repr": action_repr,
+            }
+
+        try:
+            return ExecutionRunner.run_plan(
+                challenge_context=challenge_context,
                 guidance=guidance,
+                work_dir=work_dir,
+                input_dir=input_dir,
+                single_action_executor=run_single_container_action,
                 flag_format_regex=self.flag_format_regex,
-                timed_out=True,
+                default_timeout=60,
             )
         except Exception as e:
             if self.allow_local_fallback:
@@ -250,7 +236,7 @@ class ContainerExecutor:
                 return_code=-1,
                 stdout="",
                 stderr=str(e),
-                actions_performed=actions_performed,
+                actions_performed=["container_error"],
                 work_dir=work_dir,
                 guidance=guidance,
                 flag_format_regex=self.flag_format_regex,
